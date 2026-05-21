@@ -23,6 +23,20 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
 static_assertions = { workspace = true }
+# `chrono` enters the Domain layer with the AI slice (issue #31): `Turn`
+# stamps a `DateTime<Utc>` so persistence can order conversation history
+# without a parallel index. The workspace pin already trims to
+# `std + serde + clock`, which is the surface this crate uses.
+chrono = { workspace = true }
+# `async-trait` is the only practical way to make `AiProvider` —
+# specifically its `async fn list_models` — `dyn`-compatible on stable
+# Rust today. Pulled in here rather than in feature crates so every
+# adapter sees the same trait surface.
+async-trait = { workspace = true }
+# `futures` ships the `BoxStream` alias the provider trait returns and
+# the `Stream`/`StreamExt` traits downstream crates will consume to
+# drive the agent loop.
+futures = { workspace = true }
 
 [dev-dependencies]
 # `serde_json` is also a runtime dep, but listing it as a dev-dep in

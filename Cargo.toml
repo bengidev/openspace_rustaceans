@@ -37,6 +37,22 @@ serde_json = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
 static_assertions = "1"
 proptest = "1"
+# `chrono` carries the timestamp shape on persisted Domain types. The
+# `default-features = false` cut drops the `oldtime` and `wasmbind` extras
+# we do not need; `std + serde + clock` keeps `DateTime<Utc>::now()` and
+# round-trippable serde wire forms — exactly what the AI Domain slice
+# needs and nothing more.
+chrono = { version = "0.4", default-features = false, features = ["std", "serde", "clock"] }
+# `async-trait` papers over the lack of native `async fn` in trait
+# objects on stable Rust. The AI provider trait must be `dyn`-compatible
+# so the agent loop can hold it behind `Arc<dyn AiProvider + Send + Sync>`;
+# this crate gives us that with a single attribute macro.
+async-trait = "0.1"
+# `futures` supplies `BoxStream` for the streaming chat surface. We pull
+# the umbrella crate (default features) because the AI slice consumes
+# both `stream::BoxStream` and the `Stream` extension methods that
+# downstream crates will reach for next.
+futures = "0.3"
 
 # Release profile tuned for distributable binaries: full optimisation,
 # thin LTO, single codegen unit, stripped symbols, abort on panic. The
