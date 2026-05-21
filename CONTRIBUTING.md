@@ -47,18 +47,21 @@ The same constraint applies to AI coding agents working in this repo — see
 
 ## Getting set up
 
-OpenSpace targets a stable Rust toolchain. Once the crate manifest lands:
+OpenSpace targets a stable Rust toolchain pinned in `rust-toolchain.toml`
+at the repo root, so a fresh `rustup` will pick the right channel
+automatically. From a clean checkout:
 
 ```sh
-rustup show          # confirm an active toolchain
-cargo build          # compile
-cargo test           # run unit and integration tests
-cargo fmt --all      # format
-cargo clippy --all-targets --all-features -- -D warnings   # lint
+rustup show          # confirm the pinned toolchain is active
+cargo build --workspace                                    # compile
+cargo test --workspace                                     # run unit and integration tests
+cargo fmt --all                                            # format
+cargo clippy --workspace --all-targets -- -D warnings      # lint
 ```
 
-Until the manifest is in place, contributions are mostly documentation,
-ADRs, and scaffolding. See `docs/roadmap.md` for current priorities.
+These are the same commands the CI matrix runs on macOS, Ubuntu, and
+Windows — keeping local and CI in lockstep avoids "works on my machine"
+drift. See `docs/roadmap.md` for current priorities.
 
 ## Branching
 
