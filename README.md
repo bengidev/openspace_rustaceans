@@ -93,22 +93,28 @@ pieces fit together.
 
 ## Quick start
 
-OpenSpace is built in Rust. Once a `Cargo.toml` lands at the repo root, the
-expected workflow is:
+OpenSpace is built in Rust as a Cargo workspace. The `rust-toolchain.toml`
+at the repo root pins the compiler channel, so a fresh checkout picks up
+the right toolchain automatically.
 
 ```sh
-# Build a development binary
-cargo build
+# Build every crate in the workspace
+cargo build --workspace
 
-# Run the desktop shell
-cargo run
+# Run the desktop shell (placeholder banner at this stage)
+cargo run -p openspace-app
 
 # Run the test suite
-cargo test
+cargo test --workspace
+
+# Lint and format gates (mirror what CI enforces)
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --all -- --check
 ```
 
-Until the crate manifest is in place, this section is aspirational. Track
-progress in `docs/roadmap.md`.
+The `openspace-app` binary is currently a placeholder that prints a
+version banner and exits. The full desktop shell lands in later phases —
+track progress in `docs/roadmap.md`.
 
 ## Repository layout
 

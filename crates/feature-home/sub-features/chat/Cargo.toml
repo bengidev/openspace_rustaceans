@@ -6,3 +6,6 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 description = "Chat mode — long-form conversational surface."
+
+[lints]
+workspace = true

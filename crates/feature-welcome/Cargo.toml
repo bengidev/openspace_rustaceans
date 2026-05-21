@@ -6,3 +6,6 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 description = "Welcome / onboarding mode for OpenSpace."
+
+[lints]
+workspace = true

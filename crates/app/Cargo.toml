@@ -13,3 +13,6 @@ description = "OpenSpace desktop shell binary."
 [[bin]]
 name = "openspace"
 path = "src/main.rs"
+
+[lints]
+workspace = true
