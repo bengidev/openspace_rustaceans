@@ -120,6 +120,52 @@ impl SandboxedHttpClient {
         &self.policy
     }
 
+    /// Borrow the underlying `reqwest::Client`.
+    ///
+    /// Adapters that need to attach bespoke headers (a provider's
+    /// `Authorization`, a request-id correlation header, …) build
+    /// their request through this client and hand the assembled
+    /// [`reqwest::Request`] back to [`Self::send`]. Bypassing this
+    /// accessor and constructing a fresh `reqwest::Client` would
+    /// silently skip the sandbox gate; that is the contract every
+    /// adapter relies on.
+    #[must_use]
+    pub fn client(&self) -> &reqwest::Client {
+        &self.inner
+    }
+
+    /// Send a pre-built request through the sandbox gate and return
+    /// the raw [`reqwest::Response`] — including non-success statuses
+    /// and every response header.
+    ///
+    /// Unlike [`Self::get`] / [`Self::post_json`] / [`Self::post_streaming`],
+    /// this method intentionally does *not* convert non-2xx responses
+    /// into [`HttpClientError::Status`]. Provider adapters need to
+    /// inspect the status code and headers (e.g. `Retry-After` on
+    /// 429) to map onto their own categorised error vocabulary;
+    /// `ensure_success` would discard that detail.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same gate-stage variants as the other entry points
+    /// ([`HttpClientError::SandboxBlocked`],
+    /// [`HttpClientError::SandboxDenied`],
+    /// [`HttpClientError::ApprovalTimeout`],
+    /// [`HttpClientError::MissingHost`]) and
+    /// [`HttpClientError::Transport`] for `reqwest` failures. Never
+    /// returns [`HttpClientError::Status`] — successful and
+    /// unsuccessful HTTP statuses both pass through to the caller.
+    pub async fn send(
+        &self,
+        request: reqwest::Request,
+    ) -> Result<reqwest::Response, HttpClientError> {
+        self.gate(request.url()).await?;
+        self.inner
+            .execute(request)
+            .await
+            .map_err(HttpClientError::from)
+    }
+
     /// Issue a GET against `url`. The returned [`reqwest::Response`]
     /// can be drained with `.text()` / `.json()` or streamed via
     /// `.bytes_stream()`; callers wanting a stream up-front use
