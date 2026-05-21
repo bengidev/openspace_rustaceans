@@ -51,33 +51,14 @@ use serde::{Deserialize, Serialize};
 use static_assertions::assert_impl_all;
 
 // ─────────────────────────────────────────────────────────────────────
-// SafetyClass — stub. The full surface ships with the tool module in
-// slice 6 and this declaration moves there at that time. We keep a
-// minimal copy here so `TrustMode::approval_for` has a real type to
-// match on; downstream consumers are expected to import from `tool`
-// once it lands.
-// TODO(slice-6): relocate to tool module and re-export here.
+// SafetyClass — re-exported from the canonical home in `tool`. Slice 6
+// (#32) relocated the type to `crate::tool` and turned this slot into
+// a re-export so existing call sites that import from `sandbox` keep
+// working without churn. New code is expected to import directly
+// from `crate::tool`.
 // ─────────────────────────────────────────────────────────────────────
 
-/// Coarse safety category for a tool invocation.
-///
-/// This is a placeholder shape for slice 3. The authoritative
-/// definition lands in the `tool` module in slice 6, at which point
-/// this declaration is removed and `sandbox` re-exports the type via
-/// `pub use crate::tool::SafetyClass;`. The TODO above marks the
-/// migration so the move is unambiguous when it happens.
-// TODO(slice-6): relocate to tool module and re-export here.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SafetyClass {
-    /// Read-only or otherwise side-effect-free operation.
-    Safe,
-    /// Side-effecting but reversible (a file write, a network GET).
-    RequiresApproval,
-    /// Irreversible or high-blast-radius (`rm -rf`, schema migration).
-    Destructive,
-}
-
-assert_impl_all!(SafetyClass: Send, Sync);
+pub use crate::tool::SafetyClass;
 
 // ─────────────────────────────────────────────────────────────────────
 // ApprovalMode / ExecutionStyle — small enums consumed by TrustMode
