@@ -13,6 +13,7 @@ resolver = "2"
 members = [
     "crates/app",
     "crates/shared",
+    "crates/ai-providers",
     "crates/feature-welcome",
     "crates/feature-home",
     "crates/feature-home/sub-features/*",
@@ -53,6 +54,31 @@ async-trait = "0.1"
 # both `stream::BoxStream` and the `Stream` extension methods that
 # downstream crates will reach for next.
 futures = "0.3"
+# `reqwest` is the HTTP client every provider adapter talks through.
+# Pinned with `rustls-tls` so we keep the security surface predictable
+# (no system OpenSSL), `http2` so ALPN can negotiate HTTP/2 with
+# upstream services, `json` for ergonomic POST bodies, and `stream`
+# so SSE / JSON-NL responses can be consumed lazily without buffering
+# the whole body.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2", "json", "stream"] }
+# `url` is reqwest's URL type re-exported under its own crate. We pin
+# it at the workspace level so the sandbox-aware HTTP client and the
+# adapters that build URLs share the same parser semantics.
+url = "2"
+# `bytes` lets the sandboxed HTTP client expose response chunks to
+# downstream parsers (SSE / JSON-NL framing) without copying. The
+# workspace pin keeps reqwest and adapters on the same major version.
+bytes = "1"
+# `wiremock` powers the integration tests that exercise the gate
+# matrix and approval flow. Dev-only — production crates do not
+# pull it in.
+wiremock = "0.6"
+# `toml` rounds out the serde test matrix on persisted Domain types:
+# JSON locks the wire shape, TOML locks the settings-file shape. The
+# crate is dev-only (only `openspace-shared`'s tests pull it today),
+# but it still belongs in the workspace block so future settings-layer
+# code does not pick a drifting version.
+toml = "0.8"
 
 # Release profile tuned for distributable binaries: full optimisation,
 # thin LTO, single codegen unit, stripped symbols, abort on panic. The

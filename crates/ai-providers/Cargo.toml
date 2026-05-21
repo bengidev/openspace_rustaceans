@@ -1,0 +1,43 @@
+[package]
+name = "openspace-ai-providers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "AI provider adapters and supporting infrastructure for OpenSpace."
+
+# This crate hosts the runtime-side machinery that turns the
+# `openspace-shared::ai::provider::AiProvider` trait surface into
+# working backends — HTTP clients, secret-store implementations,
+# wire-format adapters. The current slice (issue #43) only ships the
+# crate skeleton and the `InMemorySecretStore` test double; later
+# slices add the OS-keychain backend, the `ToolCallAccumulator` deep
+# module, and the concrete provider adapters.
+[dependencies]
+# `openspace-shared` carries the `SecretStore` trait, the `SecretRef`
+# handle, and the `SecretError` enum this crate's in-memory backend
+# implements. The path dependency is intentional — every workspace
+# crate goes through `path = "..."` so a checkout builds without
+# resolver gymnastics.
+openspace-shared = { path = "../shared" }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[features]
+# Default features stay empty so production builds never carry the
+# in-memory secret-store double. Downstream crates that want the
+# fixture opt in via `[dev-dependencies]`:
+#   openspace-ai-providers = { path = "...", features = ["test-support"] }
+default = []
+
+# `test-support` gates the `InMemorySecretStore` fixture. Mirrors the
+# convention `openspace-shared` established — feature-gated test
+# scaffolding lives next to the production code so a swap-in test
+# double cannot drift from the real trait surface, but the fixture
+# itself is never compiled into a release artefact.
+test-support = []
+
+[lints]
+workspace = true
