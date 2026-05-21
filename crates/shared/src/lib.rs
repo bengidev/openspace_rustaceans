@@ -9,6 +9,8 @@
 //! consume it, and it cannot live in a downstream crate without
 //! cyclic dependencies." Speculative types invite drift.
 
+pub mod error;
+
 /// Test fixtures shared across the workspace — `ScriptedProvider`,
 /// `MockTool`, `TempWorkspace`, etc. Currently empty; later PRD-01
 /// slices populate it. Gated behind `test-support` so release builds
