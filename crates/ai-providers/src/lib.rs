@@ -65,6 +65,21 @@ pub mod accumulator;
 mod client;
 mod error;
 
+// `keyring_backend` is the small private trait that abstracts the OS
+// keychain so the public `KeyringSecretStore` can be exercised against
+// an injected stub without a populated keychain. It stays `pub(crate)`
+// — the public surface is the secret-store wrapper, not the backend
+// trait.
+mod keyring_backend;
+
+/// OS-keychain-backed [`openspace_shared::ai::secret::SecretStore`]
+/// implementation. Production-side counterpart of the
+/// `test-support`-only `InMemorySecretStore` — a process never has both
+/// in scope at once, so the two cannot drift from the trait contract.
+pub mod keyring_secret_store;
+
+pub use keyring_secret_store::KeyringSecretStore;
+
 #[cfg(feature = "test-support")]
 mod in_memory_secret_store;
 
