@@ -60,6 +60,22 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "sync"] }
 tracing = { workspace = true }
 url = { workspace = true }
+# `keyring` powers the OS-keychain-backed `SecretStore` implementation.
+#
+# Backend wiring is target-gated inside the crate itself (no Cargo
+# features to choose): on macOS / iOS the native keychain backend is
+# pulled in automatically, on Windows the native credential store, on
+# Linux / FreeBSD a secret-service backend over D-Bus. On headless or
+# minimal Linux systems where no secret-service daemon is running the
+# IPC call fails at runtime; `KeyringSecretStore` translates that
+# error into `SecretError::Unavailable` so the agent loop can surface
+# an actionable diagnostic instead of panicking.
+#
+# Pinned at the crate manifest (not the workspace) because no other
+# crate needs `keyring` today. Pinned at v3 — the v4 line splits its
+# error surface across an extra `keyring-core` crate without adding
+# functionality this slice needs.
+keyring = "3"
 
 [dev-dependencies]
 # Pull `openspace-shared` again with `test-support` so any fixtures
