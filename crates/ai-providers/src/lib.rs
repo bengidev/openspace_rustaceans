@@ -36,6 +36,10 @@
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+pub mod accumulator;
+
+pub use accumulator::{AccumulatorError, ToolCall, ToolCallAccumulator};
+
 #[cfg(feature = "test-support")]
 mod in_memory_secret_store;
 
