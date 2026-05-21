@@ -32,6 +32,14 @@ description = "AI provider adapters and supporting infrastructure for OpenSpace.
 # the AI Domain types the streaming accumulator emits.
 openspace-shared = { path = "../shared" }
 async-trait = { workspace = true }
+# `async-stream` lets the alternative wire-format adapter compose the
+# byte-stream → JSON-NL parse → `StreamEvent` pipeline as a single
+# `try_stream!` block. Hand-rolling the equivalent state machine on
+# top of `futures::stream::unfold` is workable but readability falls
+# off a cliff once cancellation, error fan-out, and a stateful parser
+# all live in the same loop. Locking the dep at the workspace level
+# keeps later adapters from drifting versions.
+async-stream = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }
 # `reqwest` carries the workspace-level feature pin (`rustls-tls`,
@@ -66,6 +74,11 @@ url = { workspace = true }
 # the integration tests share with later provider slices are
 # reachable without changing the production-time feature shape.
 openspace-shared = { path = "../shared", features = ["test-support"] }
+# `chrono` shows up in unit and integration tests when fabricating
+# `Turn::created_at` timestamps. The production code does not need
+# it directly — the request body construction is timestamp-free —
+# so the dep stays scoped to dev-dependencies.
+chrono = { workspace = true }
 proptest = { workspace = true }
 # `serde_json` is also a runtime dep, but listing it as a dev-dep
 # in parallel makes the streaming-reassembly tests' intent
@@ -106,6 +119,18 @@ test-support = []
 [[test]]
 name = "sandboxed_http_client"
 path = "tests/sandboxed_http_client.rs"
+required-features = ["test-support"]
+
+# Same gating as `sandboxed_http_client`: the alternative wire-format
+# adapter's integration tests construct an `InMemorySecretStore` and
+# the approval-channel doubles, both of which live behind
+# `test-support`. Declaring `required-features` here lets `cargo test`
+# (no flags) skip the file cleanly while
+# `cargo test --features test-support` picks it up — matches the
+# acceptance criteria invocation in issue #48.
+[[test]]
+name = "anthropic_provider"
+path = "tests/anthropic_provider.rs"
 required-features = ["test-support"]
 
 [lints]
