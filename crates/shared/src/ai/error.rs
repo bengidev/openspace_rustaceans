@@ -27,6 +27,13 @@
 //!   non-error in most surfaces but still surfaced as an error variant
 //!   so callers can branch on it explicitly instead of poking at a
 //!   parallel cancellation flag.
+//! - [`AiError::Unsupported`] — the request asked for a capability the
+//!   selected model does not advertise (e.g. a vision-only model paired
+//!   with an image part, or a text-only model paired with a tool-call
+//!   turn). Distinct from [`AiError::InvalidRequest`] because the
+//!   *request* is structurally fine — the *model* is the constraint.
+//!   The agent loop can react by reselecting a model rather than
+//!   surfacing a caller bug.
 //! - [`AiError::Other`] — escape hatch for adapters that genuinely
 //!   cannot map onto the categories above. The string describes the
 //!   failure for log readers.
@@ -102,6 +109,15 @@ pub enum AiError {
     #[error("cancelled")]
     Cancelled,
 
+    /// Selected model does not advertise the capability the request
+    /// needs. The string describes which capability tripped (e.g.
+    /// `"image input on a non-vision model"`,
+    /// `"tool calling on a tool-less model"`). Distinct from
+    /// [`AiError::InvalidRequest`] because the request itself is
+    /// well-formed — the constraint is the model's capability set.
+    #[error("unsupported: {0}")]
+    Unsupported(String),
+
     /// Catch-all for failures that genuinely do not fit any other
     /// variant. Adapters should reach for a more specific variant
     /// first; `Other` is intentionally last in the list.
@@ -134,6 +150,7 @@ mod tests {
                 message: "service unavailable".to_string(),
             },
             AiError::Cancelled,
+            AiError::Unsupported("image input on a non-vision model".to_string()),
             AiError::Other("unexpected".to_string()),
         ];
 
@@ -179,6 +196,10 @@ mod tests {
             "provider p error: m"
         );
         assert_eq!(AiError::Cancelled.to_string(), "cancelled");
+        assert_eq!(
+            AiError::Unsupported("tool calling on a tool-less model".into()).to_string(),
+            "unsupported: tool calling on a tool-less model"
+        );
         assert_eq!(AiError::Other("x".into()).to_string(), "other error: x");
     }
 }
