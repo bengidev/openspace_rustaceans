@@ -380,6 +380,10 @@ version = "0.1.0"
 dependencies = [
  "openspace-shared",
  "proptest",
+ "serde",
+ "serde_json",
+ "static_assertions",
+ "thiserror",
 ]
 
 [[package]]

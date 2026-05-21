@@ -21,9 +21,27 @@ description = "AI provider adapters and supporting infrastructure for OpenSpace.
 # crate goes through `path = "..."` so a checkout builds without
 # resolver gymnastics.
 openspace-shared = { path = "../shared" }
+# `serde` + `serde_json` power the streaming `ToolCallAccumulator`:
+# its assembled output round-trips through serde and the parser
+# leans on `serde_json::from_str` for the final structural check.
+serde = { workspace = true }
+serde_json = { workspace = true }
+# `thiserror` keeps the error enums (`AccumulatorError`,
+# `ToolCallParseError`) ergonomic without hand-rolled `Display` /
+# `Error` impls.
+thiserror = { workspace = true }
+# `static_assertions` pins `Send + Sync` invariants at compile time
+# — matches the convention in `openspace-shared` so the streaming
+# helpers cannot accidentally regress to a non-thread-safe shape.
+static_assertions = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+# `serde_json` is also a runtime dep, but listing it as a dev-dep in
+# parallel makes the streaming-reassembly tests' intent explicit and
+# matches the convention `openspace-shared` established for round-
+# trip fixtures.
+serde_json = { workspace = true }
 
 [features]
 # Default features stay empty so production builds never carry the
