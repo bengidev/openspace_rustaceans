@@ -1485,6 +1485,140 @@ mod tests {
         }
     }
 
+    // ─────────────────────────────────────────────────────────────────
+    // Round-trip property: Conversation → wire body → recovered shape
+    // ─────────────────────────────────────────────────────────────────
+
+    /// Slim recovered view of a Conversation, derived from the
+    /// rendered wire body. `proptest` checks that whatever the
+    /// generator produces survives the trip through
+    /// `build_request_body` + JSON serialisation + JSON re-parse with
+    /// the same per-turn role and per-part type sequence the original
+    /// carried (modulo the `Role::System` lift).
+    #[derive(Debug, PartialEq)]
+    struct RecoveredTurn {
+        role: String,
+        block_types: Vec<String>,
+    }
+
+    fn recover(req: &AnthropicRequest) -> Vec<RecoveredTurn> {
+        let json = serde_json::to_value(req).expect("serialise wire body");
+        json["messages"]
+            .as_array()
+            .expect("messages array")
+            .iter()
+            .map(|m| RecoveredTurn {
+                role: m["role"].as_str().expect("role string").to_string(),
+                block_types: m["content"]
+                    .as_array()
+                    .expect("content array")
+                    .iter()
+                    .map(|b| b["type"].as_str().expect("type string").to_string())
+                    .collect(),
+            })
+            .collect()
+    }
+
+    proptest::proptest! {
+        /// Generates a small mixed conversation (text + tool calls +
+        /// tool results + image refs across User / Assistant / Tool
+        /// turns) and asserts the wire body's role+block-type
+        /// sequence matches the Domain projection. The acceptance
+        /// criteria for issue #51 calls this out explicitly:
+        /// `proptest` round-trip on conversations with text + tool
+        /// calls + tool results + image refs.
+        #[test]
+        fn conversation_round_trips_through_alternative_wire_format(
+            kinds in proptest::collection::vec(
+                proptest::sample::select(vec![
+                    "user_text",
+                    "assistant_text",
+                    "assistant_tool_call",
+                    "tool_result",
+                    "user_image_url",
+                    "user_image_bytes",
+                ]),
+                1..6,
+            ),
+        ) {
+            let mut turns = Vec::new();
+            let mut expected = Vec::new();
+            for kind in &kinds {
+                let (role, parts, wire_role, blocks) = match *kind {
+                    "user_text" => (
+                        Role::User,
+                        vec![Part::Text("hi".into())],
+                        "user",
+                        vec!["text"],
+                    ),
+                    "assistant_text" => (
+                        Role::Assistant,
+                        vec![Part::Text("yo".into())],
+                        "assistant",
+                        vec!["text"],
+                    ),
+                    "assistant_tool_call" => (
+                        Role::Assistant,
+                        vec![Part::ToolCall {
+                            id: "c".into(),
+                            name: "n".into(),
+                            arguments: serde_json::json!({}),
+                        }],
+                        "assistant",
+                        vec!["tool_use"],
+                    ),
+                    "tool_result" => (
+                        Role::Tool,
+                        vec![Part::ToolResult {
+                            call_id: "c".into(),
+                            content: serde_json::json!("ok"),
+                            is_error: false,
+                        }],
+                        "user",
+                        vec!["tool_result"],
+                    ),
+                    "user_image_url" => (
+                        Role::User,
+                        vec![Part::Image {
+                            mime: "image/png".into(),
+                            data: ImagePayload::Url("https://x.invalid/y".into()),
+                        }],
+                        "user",
+                        vec!["image"],
+                    ),
+                    "user_image_bytes" => (
+                        Role::User,
+                        vec![Part::Image {
+                            mime: "image/png".into(),
+                            data: ImagePayload::Bytes(vec![1, 2, 3]),
+                        }],
+                        "user",
+                        vec!["image"],
+                    ),
+                    other => unreachable!("unexpected kind {other}"),
+                };
+                turns.push(Turn::new(
+                    TurnId::new_v4(),
+                    role,
+                    parts,
+                    DateTime::<Utc>::from_timestamp(1_700_000_000, 0).expect("ts"),
+                    None,
+                ));
+                expected.push(RecoveredTurn {
+                    role: wire_role.to_string(),
+                    block_types: blocks.into_iter().map(String::from).collect(),
+                });
+            }
+            let conv = Conversation::new(ChatId::new_v4(), None, turns, None);
+            let req = build_request_body(
+                &conv,
+                &ModelRef::new(PROVIDER_ID, "claude-3-5-sonnet-latest"),
+                &GenerationParams::default(),
+            );
+            proptest::prop_assert_eq!(recover(&req), expected);
+        }
+    }
+
     /// JSON-NL parser handles partial chunks split across reads.
     #[test]
     fn json_nl_parser_reassembles_split_lines() {
