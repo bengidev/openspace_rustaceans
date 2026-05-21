@@ -13,6 +13,7 @@ resolver = "2"
 members = [
     "crates/app",
     "crates/shared",
+    "crates/ai-providers",
     "crates/feature-welcome",
     "crates/feature-home",
     "crates/feature-home/sub-features/*",
