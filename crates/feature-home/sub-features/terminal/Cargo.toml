@@ -1,0 +1,8 @@
+[package]
+name = "openspace-feature-terminal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Terminal mode — interactive shell with AI sidekick."
