@@ -42,6 +42,7 @@ use bytes::Bytes;
 use futures::Stream;
 use openspace_shared::sandbox::{SandboxDecision, SandboxPolicy};
 use openspace_shared::tool::{ApprovalChannel, ApprovalDecision};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::Url;
 use serde::Serialize;
 
@@ -169,10 +170,39 @@ impl SandboxedHttpClient {
         body: &B,
     ) -> Result<impl Stream<Item = Result<Bytes, HttpClientError>> + Send + 'static, HttpClientError>
     {
+        self.post_streaming_with_headers(url, body, &[]).await
+    }
+
+    /// Issue a POST with a JSON body and an explicit set of extra
+    /// request headers, then return the response body as a stream of
+    /// byte chunks.
+    ///
+    /// Adapter-specific headers (auth keys, wire-format version pins,
+    /// telemetry markers) flow through here. Header names that fail to
+    /// parse, or values that contain forbidden bytes, surface as
+    /// [`HttpClientError::InvalidUrl`] with a `header:` prefix on the
+    /// diagnostic — same precondition shape the URL parser uses, so
+    /// the agent loop's existing handling continues to apply.
+    ///
+    /// # Errors
+    ///
+    /// Any [`HttpClientError`] variant — see the module docs.
+    pub async fn post_streaming_with_headers<B: Serialize + ?Sized>(
+        &self,
+        url: &str,
+        body: &B,
+        headers: &[(&str, &str)],
+    ) -> Result<impl Stream<Item = Result<Bytes, HttpClientError>> + Send + 'static, HttpClientError>
+    {
         let parsed = parse_url(url)?;
         self.gate(&parsed).await?;
-        let resp = self.inner.post(parsed).json(body).send().await?;
-        let resp = ensure_success(resp).await?;
+        let header_map = build_header_map(headers)?;
+        let mut req = self.inner.post(parsed).json(body);
+        if !header_map.is_empty() {
+            req = req.headers(header_map);
+        }
+        let resp = req.send().await?;
+        let resp = ensure_success_preserving_headers(resp).await?;
         Ok(futures::StreamExt::map(resp.bytes_stream(), |chunk| {
             chunk.map_err(HttpClientError::from)
         }))
@@ -242,12 +272,69 @@ fn parse_url(url: &str) -> Result<Url, HttpClientError> {
 /// with a bounded body preview. Successful responses pass through
 /// untouched so streaming consumers can keep the body intact.
 async fn ensure_success(resp: reqwest::Response) -> Result<reqwest::Response, HttpClientError> {
+    ensure_success_preserving_headers(resp).await
+}
+
+/// Same gate as [`ensure_success`] but additionally captures the
+/// parsed `Retry-After` header into the resulting
+/// [`HttpClientError::Status`]. Streaming entry points use this so
+/// adapters that surface 429 → `RateLimited` can read the back-off
+/// hint directly from the typed error without scraping the body.
+async fn ensure_success_preserving_headers(
+    resp: reqwest::Response,
+) -> Result<reqwest::Response, HttpClientError> {
     if resp.status().is_success() {
         return Ok(resp);
     }
     let status = resp.status().as_u16();
+    let retry_after = parse_retry_after(resp.headers());
     let bytes = resp.bytes().await.unwrap_or_default();
     let take = bytes.len().min(STATUS_BODY_PREVIEW_BYTES);
     let body = String::from_utf8_lossy(&bytes[..take]).into_owned();
-    Err(HttpClientError::Status { status, body })
+    Err(HttpClientError::Status {
+        status,
+        body,
+        retry_after,
+    })
+}
+
+/// Convert the input slice of `(name, value)` pairs into a
+/// [`HeaderMap`]. Returns
+/// [`HttpClientError::InvalidUrl`] (with a `header:` prefix) when a
+/// pair fails to parse — adapters expose this as an
+/// [`crate::error::HttpClientError`] precondition exactly the same way
+/// a malformed URL surfaces, so the agent loop's existing handling
+/// applies. The `InvalidUrl` reuse is deliberate: both failures share
+/// the same caller-bug shape, and adding a dedicated `InvalidHeader`
+/// variant would expand the public error surface for a single
+/// precondition the caller controls end-to-end.
+fn build_header_map(pairs: &[(&str, &str)]) -> Result<HeaderMap, HttpClientError> {
+    let mut map = HeaderMap::with_capacity(pairs.len());
+    for (name, value) in pairs {
+        let name: HeaderName = name
+            .parse()
+            .map_err(|e: reqwest::header::InvalidHeaderName| {
+                HttpClientError::InvalidUrl(format!("header name: {e}"))
+            })?;
+        let value = HeaderValue::from_str(value)
+            .map_err(|e| HttpClientError::InvalidUrl(format!("header value: {e}")))?;
+        map.append(name, value);
+    }
+    Ok(map)
+}
+
+/// Parse the `Retry-After` header into a [`Duration`].
+///
+/// Per RFC 9110, the header carries either a delta-seconds value
+/// (a non-negative decimal integer) or an HTTP-date. We accept the
+/// integer form, which is what every modern AI provider uses; the
+/// HTTP-date form is left as `None` because none of the documented
+/// upstreams emit it. Returning `None` rather than erroring keeps the
+/// 429 path resilient: a malformed value still yields a typed
+/// `Status { status: 429, .. }` and the AI layer falls back to its
+/// own back-off.
+fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    let raw = headers.get(reqwest::header::RETRY_AFTER)?.to_str().ok()?;
+    let secs: u64 = raw.trim().parse().ok()?;
+    Some(Duration::from_secs(secs))
 }

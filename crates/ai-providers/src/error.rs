@@ -70,6 +70,14 @@ pub enum HttpClientError {
         status: u16,
         /// Truncated response body (≤ 8 KiB) for diagnostics.
         body: String,
+        /// Parsed value of the `Retry-After` response header, when
+        /// the server supplied one. Adapters that surface
+        /// rate-limit failures (HTTP 429) read this to populate the
+        /// AI-layer back-off hint without re-parsing the original
+        /// response. `None` when the header was absent or could not
+        /// be parsed as either a positive integer (delta-seconds) or
+        /// an HTTP-date.
+        retry_after: Option<Duration>,
     },
 }
 
@@ -105,6 +113,7 @@ mod tests {
         let err = HttpClientError::Status {
             status: 500,
             body: "boom".into(),
+            retry_after: None,
         };
         assert!(!err.is_sandbox());
     }

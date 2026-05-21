@@ -49,6 +49,12 @@ chrono = { version = "0.4", default-features = false, features = ["std", "serde"
 # so the agent loop can hold it behind `Arc<dyn AiProvider + Send + Sync>`;
 # this crate gives us that with a single attribute macro.
 async-trait = "0.1"
+# `async-stream` is the readability tax-cut on streaming pipelines —
+# adapter implementations compose `byte stream → parser → events` as
+# a single `try_stream!` block instead of a hand-rolled `unfold` state
+# machine. Pinned at the workspace level so every adapter slice (this
+# one, the next, the registry) stays on the same major.
+async-stream = "0.3"
 # `futures` supplies `BoxStream` for the streaming chat surface. We pull
 # the umbrella crate (default features) because the AI slice consumes
 # both `stream::BoxStream` and the `Stream` extension methods that
