@@ -44,6 +44,10 @@ futures = { workspace = true }
 # acceptance-criteria phrasing in issue #27.
 serde_json = { workspace = true }
 proptest = { workspace = true }
+# `toml` is dev-only — used by the secret-handle smoke test to confirm
+# `SecretRef` survives the settings-file pipeline (PRD-03's wire format)
+# in addition to JSON. No runtime code in this crate touches TOML.
+toml = { workspace = true }
 
 [features]
 # Default features stay minimal so downstream crates pay nothing for
