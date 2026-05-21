@@ -37,7 +37,7 @@ use thiserror::Error;
 pub enum PersistenceError {
     /// An underlying IO operation failed (file not readable, disk
     /// full, permission denied, …). The string carries the OS-level
-    /// description from [`io::Error::to_string`].
+    /// description from the underlying [`io::Error`].
     #[error("io error: {0}")]
     Io(String),
 
