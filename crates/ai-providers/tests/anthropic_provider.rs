@@ -19,8 +19,12 @@ use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use openspace_ai_providers::test_support::AlwaysApprove;
-use openspace_ai_providers::{AnthropicProvider, InMemorySecretStore, SandboxedHttpClient};
-use openspace_shared::ai::domain::{Conversation, GenerationParams, ModelRef, Part, Role, Turn};
+use openspace_ai_providers::{
+    AnthropicProvider, InMemorySecretStore, SandboxedHttpClient, ToolCallAccumulator,
+};
+use openspace_shared::ai::domain::{
+    Conversation, GenerationParams, ImagePayload, ModelRef, Part, Role, Turn,
+};
 use openspace_shared::ai::error::AiError;
 use openspace_shared::ai::provider::{AiProvider, StreamEvent};
 use openspace_shared::ai::secret::{SecretRef, SecretStore};
@@ -390,7 +394,7 @@ async fn dropping_stream_closes_connection_within_one_second() {
 
     let mut stream = provider.chat_stream(
         conv_with_system("", "hi"),
-        ModelRef::new("anthropic", "model-x"),
+        ModelRef::new("anthropic", "claude-3-5-sonnet-latest"),
         GenerationParams::default(),
     );
 
@@ -408,4 +412,309 @@ async fn dropping_stream_closes_connection_within_one_second() {
         elapsed < Duration::from_secs(1),
         "server saw close after {elapsed:?}, expected < 1s",
     );
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// 5. Tool-call streaming — single-turn
+// ─────────────────────────────────────────────────────────────────────
+
+/// Streamed tool-call assembly. The wire format announces a tool call
+/// via `content_block_start` (carrying `id` and `name`), then streams
+/// the argument JSON in `input_json_delta` fragments. The adapter
+/// surfaces each piece as `StreamEvent::ToolCallDelta` and the consumer
+/// feeds the deltas through [`ToolCallAccumulator`] to recover the full
+/// argument object.
+#[tokio::test]
+async fn streaming_single_tool_call_assembles_through_accumulator() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(jsonnl_response(&[
+            r#"{"type":"message_start","message":{"usage":{"input_tokens":3,"output_tokens":0}}}"#,
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call_1","name":"search"}}"#,
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"query\":"}}"#,
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\"rust\"}"}}"#,
+            r#"{"type":"content_block_stop","index":0}"#,
+            r#"{"type":"message_stop"}"#,
+        ]))
+        .mount(&server)
+        .await;
+
+    let provider = provider_at(&server.uri());
+    let mut events = Vec::new();
+    let mut stream = provider.chat_stream(
+        conv_with_system("", "look it up"),
+        ModelRef::new("anthropic", "claude-3-5-sonnet-latest"),
+        GenerationParams::default(),
+    );
+    while let Some(item) = stream.next().await {
+        events.push(item.expect("no errors expected"));
+    }
+
+    // First event is usage; the next three are tool-call deltas.
+    let deltas: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::ToolCallDelta(d) => Some(d.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(deltas.len(), 3);
+    assert_eq!(deltas[0].name.as_deref(), Some("search"));
+    assert_eq!(deltas[0].arguments_delta, "");
+    assert!(deltas[1].name.is_none());
+    assert!(deltas[2].name.is_none());
+
+    // Reassemble the call by feeding the deltas through the
+    // accumulator and asserting the structural payload.
+    let mut acc = ToolCallAccumulator::new();
+    let id = deltas[0].call_id.clone();
+    let name = deltas[0].name.clone().expect("first delta carries name");
+    // Synthesise the full assembly target the accumulator expects:
+    // `{"id":"…","name":"…","arguments":<deltas joined>}`.
+    let joined: String = deltas.iter().map(|d| d.arguments_delta.clone()).collect();
+    let payload = format!(r#"{{"id":"{id}","name":"{name}","arguments":{joined}}}"#);
+    acc.append(&payload);
+    let call = acc.take_finished().expect("accumulator parses payload");
+    assert_eq!(call.id, "call_1");
+    assert_eq!(call.name, "search");
+    assert_eq!(call.arguments["query"], "rust");
+
+    // Stream ends with Done.
+    assert!(matches!(events.last(), Some(StreamEvent::Done)));
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// 6. Tool-call streaming — multi-turn (back-to-back tool calls)
+// ─────────────────────────────────────────────────────────────────────
+
+/// Two tool calls in the same stream. The adapter must thread distinct
+/// `call_id`s through the deltas (via the index map maintained across
+/// `content_block_start` / `content_block_stop` boundaries) so the
+/// consumer cannot conflate the two argument objects.
+#[tokio::test]
+async fn streaming_multi_turn_tool_calls_route_to_distinct_ids() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(jsonnl_response(&[
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"a","name":"first"}}"#,
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"k\":1}"}}"#,
+            r#"{"type":"content_block_stop","index":0}"#,
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"b","name":"second"}}"#,
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"k\":2}"}}"#,
+            r#"{"type":"content_block_stop","index":0}"#,
+            r#"{"type":"message_stop"}"#,
+        ]))
+        .mount(&server)
+        .await;
+
+    let provider = provider_at(&server.uri());
+    let events = collect_events(&provider, conv_with_system("", "two calls")).await;
+    let deltas: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            Ok(StreamEvent::ToolCallDelta(d)) => Some(d.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(deltas.len(), 4);
+    assert_eq!(deltas[0].call_id, "a");
+    assert_eq!(deltas[0].name.as_deref(), Some("first"));
+    assert_eq!(deltas[1].call_id, "a");
+    assert_eq!(deltas[1].arguments_delta, r#"{"k":1}"#);
+    assert_eq!(deltas[2].call_id, "b");
+    assert_eq!(deltas[2].name.as_deref(), Some("second"));
+    assert_eq!(deltas[3].call_id, "b");
+    assert_eq!(deltas[3].arguments_delta, r#"{"k":2}"#);
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// 7. Image input lifts into the wire-format `image` content block
+// ─────────────────────────────────────────────────────────────────────
+
+/// User turn with an inline image part. The outgoing request body must
+/// carry an `image` block whose `source.type == "base64"` and whose
+/// `data` is the standard base64 encoding of the inline payload.
+#[tokio::test]
+async fn outgoing_request_carries_image_input_as_base64_block() {
+    let server = MockServer::start().await;
+    let captured: Arc<std::sync::Mutex<Option<Vec<u8>>>> = Arc::new(std::sync::Mutex::new(None));
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(CapturingResponder {
+            captured: captured.clone(),
+            template: jsonnl_response(&[r#"{"type":"message_stop"}"#]),
+        })
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let provider = provider_at(&server.uri());
+    let conv = Conversation::new(
+        ChatId::new_v4(),
+        None,
+        vec![Turn::new(
+            TurnId::new_v4(),
+            Role::User,
+            vec![
+                Part::Text("describe this".into()),
+                Part::Image {
+                    mime: "image/png".into(),
+                    data: ImagePayload::Bytes(vec![0x89, 0x50, 0x4E, 0x47]),
+                },
+            ],
+            chrono::DateTime::<chrono::Utc>::from_timestamp(1_700_000_000, 0).expect("ts"),
+            None,
+        )],
+        None,
+    );
+    // Use a multimodal model id directly — `collect_events`'s default
+    // `model-x` falls through to the conservative-fallback path and
+    // would short-circuit the request with `AiError::Unsupported`
+    // before any HTTP traffic, leaving `captured` empty.
+    let mut stream = provider.chat_stream(
+        conv,
+        ModelRef::new("anthropic", "claude-3-5-sonnet-latest"),
+        GenerationParams::default(),
+    );
+    while let Some(item) = stream.next().await {
+        item.expect("no errors expected");
+    }
+
+    let body = captured.lock().unwrap().clone().expect("body captured");
+    let parsed: serde_json::Value = serde_json::from_slice(&body).expect("body is JSON");
+    let content = &parsed["messages"][0]["content"];
+    let blocks = content.as_array().expect("content array");
+    assert_eq!(blocks.len(), 2, "text + image blocks");
+    assert_eq!(blocks[0]["type"], "text");
+    assert_eq!(blocks[1]["type"], "image");
+    assert_eq!(blocks[1]["source"]["type"], "base64");
+    assert_eq!(blocks[1]["source"]["media_type"], "image/png");
+    // Standard base64 of [0x89, 0x50, 0x4E, 0x47] is "iVBORw==".
+    assert_eq!(blocks[1]["source"]["data"], "iVBORw==");
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// 8. list_models — capability table
+// ─────────────────────────────────────────────────────────────────────
+
+/// `list_models` returns the static catalogue with documented
+/// capability flags. The acceptance criteria call for capability
+/// reporting per model — this test pins the multimodal vs legacy
+/// split so a future catalogue tweak does not silently regress.
+#[tokio::test]
+async fn list_models_reports_capability_table() {
+    let server = MockServer::start().await;
+    let provider = provider_at(&server.uri());
+    let models = provider.list_models().await.expect("list_models");
+    assert!(!models.is_empty());
+
+    // Multimodal flagship row carries vision + tool calling + streaming.
+    let sonnet = models
+        .iter()
+        .find(|m| m.model_ref.model_id == "claude-3-5-sonnet-latest")
+        .expect("multimodal row present");
+    assert!(sonnet.capabilities.vision);
+    assert!(sonnet.capabilities.tool_calling);
+    assert!(sonnet.capabilities.streaming);
+
+    // Legacy text-only row carries streaming only.
+    let legacy = models
+        .iter()
+        .find(|m| m.model_ref.model_id == "claude-2.1")
+        .expect("legacy row present");
+    assert!(!legacy.capabilities.vision);
+    assert!(!legacy.capabilities.tool_calling);
+    assert!(legacy.capabilities.streaming);
+
+    // Every row carries the provider id and a non-empty display name.
+    for info in &models {
+        assert_eq!(info.model_ref.provider_id, "anthropic");
+        assert!(!info.display_name.is_empty());
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// 9. Capability-mismatch surfaces AiError::Unsupported
+// ─────────────────────────────────────────────────────────────────────
+
+/// Image part on a legacy text-only model rejects with
+/// `AiError::Unsupported(_)` before any HTTP traffic is initiated.
+/// The wiremock server has no expectations registered — if the guard
+/// failed, the request would 404 or hang and the assertion would not
+/// match `Unsupported`.
+#[tokio::test]
+async fn image_part_on_text_only_model_surfaces_unsupported() {
+    let server = MockServer::start().await;
+    let provider = provider_at(&server.uri());
+    let conv = Conversation::new(
+        ChatId::new_v4(),
+        None,
+        vec![Turn::new(
+            TurnId::new_v4(),
+            Role::User,
+            vec![Part::Image {
+                mime: "image/png".into(),
+                data: ImagePayload::Url("https://example.invalid/x.png".into()),
+            }],
+            chrono::DateTime::<chrono::Utc>::from_timestamp(1_700_000_000, 0).expect("ts"),
+            None,
+        )],
+        None,
+    );
+    let mut stream = provider.chat_stream(
+        conv,
+        ModelRef::new("anthropic", "claude-2.1"),
+        GenerationParams::default(),
+    );
+    let first = stream.next().await.expect("at least one event");
+    match first {
+        Err(AiError::Unsupported(reason)) => {
+            assert!(
+                reason.contains("image input on a non-vision model"),
+                "got: {reason}"
+            );
+        }
+        other => panic!("expected Unsupported, got {other:?}"),
+    }
+}
+
+/// Tool-call part on a tool-less model rejects with the matching
+/// reason string.
+#[tokio::test]
+async fn tool_call_on_tool_less_model_surfaces_unsupported() {
+    let server = MockServer::start().await;
+    let provider = provider_at(&server.uri());
+    let conv = Conversation::new(
+        ChatId::new_v4(),
+        None,
+        vec![Turn::new(
+            TurnId::new_v4(),
+            Role::Assistant,
+            vec![Part::ToolCall {
+                id: "c1".into(),
+                name: "lookup".into(),
+                arguments: serde_json::json!({}),
+            }],
+            chrono::DateTime::<chrono::Utc>::from_timestamp(1_700_000_000, 0).expect("ts"),
+            None,
+        )],
+        None,
+    );
+    let mut stream = provider.chat_stream(
+        conv,
+        ModelRef::new("anthropic", "claude-2.1"),
+        GenerationParams::default(),
+    );
+    let first = stream.next().await.expect("at least one event");
+    match first {
+        Err(AiError::Unsupported(reason)) => {
+            assert!(
+                reason.contains("tool calling on a tool-less model"),
+                "got: {reason}"
+            );
+        }
+        other => panic!("expected Unsupported, got {other:?}"),
+    }
 }
