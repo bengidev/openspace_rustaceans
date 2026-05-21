@@ -41,6 +41,10 @@ async-trait = { workspace = true }
 # keeps later adapters from drifting versions.
 async-stream = { workspace = true }
 bytes = { workspace = true }
+# `chrono` parses HTTP-date `Retry-After` headers in the
+# error-mapping path of the openai-compatible provider. The
+# workspace pin already restricts to `std + serde + clock`.
+chrono = { workspace = true }
 futures = { workspace = true }
 # `reqwest` carries the workspace-level feature pin (`rustls-tls`,
 # `http2`, `json`, `stream`). The sandboxed HTTP client builds on
@@ -147,6 +151,15 @@ required-features = ["test-support"]
 [[test]]
 name = "anthropic_provider"
 path = "tests/anthropic_provider.rs"
+required-features = ["test-support"]
+
+# Same `required-features` rationale as the sandbox client tests:
+# the openai-compatible integration tests reach for the
+# `InMemorySecretStore` and the approval-channel stubs, both of
+# which live behind `test-support`.
+[[test]]
+name = "openai_compatible"
+path = "tests/openai_compatible.rs"
 required-features = ["test-support"]
 
 [lints]
