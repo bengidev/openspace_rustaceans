@@ -115,20 +115,19 @@ impl SecretRef {
 assert_impl_all!(SecretRef: Send, Sync);
 
 // ─────────────────────────────────────────────────────────────────────
-// SecretError — failure surface of the trait. Kept tiny on purpose:
-// the test double cannot fail, and the eventual keychain
-// implementation maps every backend failure into the single
-// `Backend(String)` variant. Additional categories (e.g. `Locked`,
-// `Cancelled`) can land later behind `#[non_exhaustive]` without
-// breaking match arms downstream.
+// SecretError — failure surface of the trait. Kept narrow on purpose:
+// the test double cannot fail, and the OS-keychain implementation
+// classifies failures into a small set the agent loop can act on.
+// Additional categories (e.g. `Locked`, `Cancelled`) can land later
+// behind `#[non_exhaustive]` without breaking match arms downstream.
 // ─────────────────────────────────────────────────────────────────────
 
 /// Failures raised by a [`SecretStore`] implementation.
 ///
 /// Marked `#[non_exhaustive]` so future PRDs can add categories the
 /// keychain backend cares about — for instance a structured `Locked`
-/// or `UserCancelled` once the OS-keychain implementation lands —
-/// without breaking pattern matches in downstream crates. Callers are
+/// or `UserCancelled` once a richer wiring layer lands — without
+/// breaking pattern matches in downstream crates. Callers are
 /// required to use a wildcard arm.
 #[derive(Debug, Error, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
@@ -138,6 +137,25 @@ pub enum SecretError {
     /// contains the secret value itself.
     #[error("secret store backend error: {0}")]
     Backend(String),
+
+    /// The platform secret backend is not reachable on this system —
+    /// for instance, a Linux desktop secret-service daemon is not
+    /// installed or not running. The `reason` field is a non-empty,
+    /// human-readable diagnostic the agent loop can surface to the
+    /// user alongside an actionable recovery hint (install / unlock a
+    /// secret-service daemon, or fall back to an ephemeral store).
+    ///
+    /// Distinguished from [`Self::Backend`] because it is not a
+    /// transient or per-call failure: every subsequent call against
+    /// the same store will also fail until the platform backend is
+    /// repaired. Callers should treat it as a "switch backends" hint,
+    /// not a "retry" hint.
+    #[error("secret store unavailable: {reason}")]
+    Unavailable {
+        /// Non-empty diagnostic explaining why the backend is
+        /// unreachable. Suitable for surfacing to the end user.
+        reason: String,
+    },
 }
 
 assert_impl_all!(SecretError: Send, Sync);
@@ -307,11 +325,11 @@ mod tests {
         );
     }
 
-    /// Round-trips `SecretError` through JSON. The variant set is
-    /// tiny today but locking the shape now means future telemetry
-    /// pipelines that snapshot errors stay stable.
+    /// Round-trips `SecretError::Backend` through JSON. The variant
+    /// set is tiny today but locking the shape now means future
+    /// telemetry pipelines that snapshot errors stay stable.
     #[test]
-    fn secret_error_round_trips_through_json() {
+    fn secret_error_backend_round_trips_through_json() {
         let original = SecretError::Backend("keychain locked".to_string());
         let json = serde_json::to_string(&original).expect("serialize");
         let decoded: SecretError = serde_json::from_str(&json).expect("deserialize");
@@ -319,6 +337,23 @@ mod tests {
         assert_eq!(
             decoded.to_string(),
             "secret store backend error: keychain locked"
+        );
+    }
+
+    /// Round-trips `SecretError::Unavailable` through JSON. Pinning
+    /// the wire form here guards against an accidental rename of the
+    /// `reason` field, which downstream telemetry snapshots key off.
+    #[test]
+    fn secret_error_unavailable_round_trips_through_json() {
+        let original = SecretError::Unavailable {
+            reason: "secret-service daemon unreachable".to_string(),
+        };
+        let json = serde_json::to_string(&original).expect("serialize");
+        let decoded: SecretError = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(original, decoded);
+        assert_eq!(
+            decoded.to_string(),
+            "secret store unavailable: secret-service daemon unreachable"
         );
     }
 }
