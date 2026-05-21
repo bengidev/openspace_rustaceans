@@ -6,8 +6,10 @@
 # slice, but platform-specific breakage (path separators, line endings,
 # OS-only deps) only shows up under a real matrix.
 #
-# Lint gates (clippy, fmt) land in follow-up commits in the same slice
-# so each gate is reviewable in isolation.
+# Lint gates run as separate jobs:
+#   - clippy: catches lint debt; runs once on Linux because lint output
+#     is platform-independent and a 3x matrix would just burn minutes.
+#   - fmt: lands in a follow-up commit in the same slice.
 
 name: CI
 
@@ -62,3 +64,24 @@ jobs:
 
       - name: cargo test --workspace
         run: cargo test --workspace --locked
+
+  clippy:
+    name: clippy (-D warnings)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (from rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Separate cache namespace from build-and-test so clippy's
+          # incremental artefacts (different codegen flags) do not
+          # invalidate the build job's cache and vice versa.
+          shared-key: clippy
+
+      - name: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
