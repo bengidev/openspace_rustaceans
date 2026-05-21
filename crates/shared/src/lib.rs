@@ -11,6 +11,7 @@
 
 pub mod error;
 pub mod id;
+pub mod workspace;
 
 /// Test fixtures shared across the workspace — `ScriptedProvider`,
 /// `MockTool`, `TempWorkspace`, etc. Currently empty; later PRD-01
