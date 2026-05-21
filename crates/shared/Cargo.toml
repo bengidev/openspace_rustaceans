@@ -7,5 +7,41 @@ repository.workspace = true
 rust-version.workspace = true
 description = "Shared types and utilities used across OpenSpace crates."
 
+# Domain-only crate. Anything pulled in here propagates to every feature
+# crate that depends on `openspace-shared`, so additions need a clear
+# justification rooted in PRD-01.
+#
+# Hard rules (PRD-01 invariants):
+#   - No `iced` and no `tokio` in this manifest. The Domain layer must
+#     stay testable without a UI runtime, and trait surfaces that need
+#     async use `async_trait` + `futures` instead of pulling in tokio.
+#   - Every public type stays `Send + Sync`; enforced at compile time
+#     with `static_assertions::assert_impl_all!` next to the type.
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+static_assertions = { workspace = true }
+
+[dev-dependencies]
+# `serde_json` is also a runtime dep, but listing it as a dev-dep in
+# parallel makes the round-trip tests' intent explicit and matches the
+# acceptance-criteria phrasing in issue #27.
+serde_json = { workspace = true }
+proptest = { workspace = true }
+
+[features]
+# Default features stay minimal so downstream crates pay nothing for
+# fixtures they do not use.
+default = []
+
+# `test-support` gates an (initially empty) `test_support` module that
+# later PRD-01 slices populate with `ScriptedProvider`, `MockTool`, and
+# `TempWorkspace` builders. Downstream crates opt in via their own
+# `[dev-dependencies]` entry: `openspace-shared = { path = "...",
+# features = ["test-support"] }`.
+test-support = []
+
 [lints]
 workspace = true
