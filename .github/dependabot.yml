@@ -1,0 +1,64 @@
+# Dependabot configuration for OpenSpace.
+#
+# Two ecosystems are tracked:
+#
+#   1. cargo  — workspace dependencies declared in the root Cargo.toml
+#               via [workspace.dependencies]. Bumps land as PRs against
+#               main; the CI matrix gates them like any other change.
+#
+#   2. github-actions — pinned action versions used in
+#               .github/workflows/*. Without this, security advisories
+#               on actions like checkout/rust-cache would silently age
+#               for months.
+#
+# Cadence is weekly. Daily would create review noise on a one-maintainer
+# project at this stage; monthly would let advisories sit unaddressed.
+#
+# `open-pull-requests-limit` caps fan-out so a quiet week followed by a
+# busy upstream week does not flood the queue. Five is comfortable for
+# manual review; bump if a maintainer ever wires in auto-merge.
+#
+# All Dependabot PRs use a conventional-commit prefix
+# (`build(deps): ...`) to match the convention documented in
+# CONTRIBUTING.md and to keep the changelog tooling happy down the line.
+
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "build(deps)"
+      include: scope
+    labels:
+      - dependencies
+      - rust
+    # Grouped updates keep PR count down for low-risk patch/minor bumps
+    # while leaving major bumps as individual PRs that deserve their
+    # own review surface.
+    groups:
+      patch-and-minor:
+        update-types:
+          - patch
+          - minor
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci(deps)"
+      include: scope
+    labels:
+      - dependencies
+      - github-actions
+    groups:
+      patch-and-minor:
+        update-types:
+          - patch
+          - minor
