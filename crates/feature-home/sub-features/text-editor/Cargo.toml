@@ -1,0 +1,8 @@
+[package]
+name = "openspace-feature-text-editor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Editor mode — text/code editor with inline AI assistance."
