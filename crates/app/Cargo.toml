@@ -1,0 +1,15 @@
+[package]
+name = "openspace-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "OpenSpace desktop shell binary."
+
+# The binary target is named `openspace` (no prefix) so the user-facing
+# command line stays short and brand-aligned, even though the Cargo
+# package keeps the `openspace-` prefix for crates.io publishability.
+[[bin]]
+name = "openspace"
+path = "src/main.rs"
