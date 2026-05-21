@@ -61,16 +61,16 @@ futures = "0.3"
 # so SSE / JSON-NL responses can be consumed lazily without buffering
 # the whole body.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2", "json", "stream"] }
-# `url` is reqwest's URL type re-exported under its own crate. We pin
-# it at the workspace level so the sandbox-aware HTTP client and the
-# adapters that build URLs share the same parser semantics.
+# `url` is the URL parser reqwest exposes under its own crate. Pinning
+# at the workspace level keeps the sandbox-aware HTTP client and any
+# downstream URL-building adapters on the same parser semantics.
 url = "2"
-# `bytes` lets the sandboxed HTTP client expose response chunks to
+# `bytes` lets the sandboxed HTTP client surface response chunks to
 # downstream parsers (SSE / JSON-NL framing) without copying. The
 # workspace pin keeps reqwest and adapters on the same major version.
 bytes = "1"
 # `wiremock` powers the integration tests that exercise the gate
-# matrix and approval flow. Dev-only — production crates do not
+# matrix and the approval flow. Dev-only — production crates do not
 # pull it in.
 wiremock = "0.6"
 # `toml` rounds out the serde test matrix on persisted Domain types:

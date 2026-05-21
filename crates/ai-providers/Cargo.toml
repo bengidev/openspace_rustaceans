@@ -9,53 +9,104 @@ description = "AI provider adapters and supporting infrastructure for OpenSpace.
 
 # This crate hosts the runtime-side machinery that turns the
 # `openspace-shared::ai::provider::AiProvider` trait surface into
-# working backends — HTTP clients, secret-store implementations,
-# wire-format adapters. The current slice (issue #43) only ships the
-# crate skeleton and the `InMemorySecretStore` test double; later
-# slices add the OS-keychain backend, the `ToolCallAccumulator` deep
-# module, and the concrete provider adapters.
+# working backends — the sandbox-aware HTTP client every adapter
+# talks through, the secret-store implementations, the streaming
+# tool-call accumulator, and (in later slices) the wire-format
+# adapters themselves.
+#
+# Hard rules:
+#
+#   - Network IO and infrastructure concerns live here, never in
+#     `openspace-shared`. The Domain crate must stay testable
+#     without a transport runtime.
+#   - All outbound traffic goes through `SandboxedHttpClient`,
+#     which gates on `SandboxPolicy::check_network` before opening
+#     a connection. Adapters never construct a bare
+#     `reqwest::Client`.
+#   - The trait surface remains provider-agnostic: nothing in this
+#     manifest names a vendor or protocol dialect.
 [dependencies]
-# `openspace-shared` carries the `SecretStore` trait, the `SecretRef`
-# handle, and the `SecretError` enum this crate's in-memory backend
-# implements. The path dependency is intentional — every workspace
-# crate goes through `path = "..."` so a checkout builds without
-# resolver gymnastics.
+# `openspace-shared` carries the trait surfaces this crate
+# implements: `SecretStore`/`SecretRef` for the in-memory backend,
+# `SandboxPolicy`/`ApprovalChannel` for the sandbox HTTP client,
+# the AI Domain types the streaming accumulator emits.
 openspace-shared = { path = "../shared" }
-# `serde` + `serde_json` power the streaming `ToolCallAccumulator`:
-# its assembled output round-trips through serde and the parser
-# leans on `serde_json::from_str` for the final structural check.
+async-trait = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+# `reqwest` carries the workspace-level feature pin (`rustls-tls`,
+# `http2`, `json`, `stream`). The sandboxed HTTP client builds on
+# those features; adapters never reach past it.
+reqwest = { workspace = true }
+# `serde` + `serde_json` power the streaming `ToolCallAccumulator`
+# (its assembled output round-trips through serde and the parser
+# leans on `serde_json::from_str` for the final structural check)
+# and the JSON request bodies the sandbox HTTP client sends.
 serde = { workspace = true }
 serde_json = { workspace = true }
-# `thiserror` keeps the error enums (`AccumulatorError`,
-# `ToolCallParseError`) ergonomic without hand-rolled `Display` /
-# `Error` impls.
-thiserror = { workspace = true }
 # `static_assertions` pins `Send + Sync` invariants at compile time
-# — matches the convention in `openspace-shared` so the streaming
-# helpers cannot accidentally regress to a non-thread-safe shape.
+# — matches the convention `openspace-shared` established so the
+# streaming helpers cannot accidentally regress to a non-thread-
+# safe shape.
 static_assertions = { workspace = true }
+# `thiserror` keeps the error enums (`AccumulatorError`,
+# `ToolCallParseError`, `HttpClientError`) ergonomic without
+# hand-rolled `Display` / `Error` impls.
+thiserror = { workspace = true }
+# `tokio` is needed at runtime for the timer the sandbox gate uses
+# to bound approval waits. The workspace pin already trims to
+# `macros + rt-multi-thread`; we layer `time` and `sync` for the
+# timeout primitive and for cross-task channels in `test_support`.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "sync"] }
+tracing = { workspace = true }
+url = { workspace = true }
 
 [dev-dependencies]
+# Pull `openspace-shared` again with `test-support` so any fixtures
+# the integration tests share with later provider slices are
+# reachable without changing the production-time feature shape.
+openspace-shared = { path = "../shared", features = ["test-support"] }
 proptest = { workspace = true }
-# `serde_json` is also a runtime dep, but listing it as a dev-dep in
-# parallel makes the streaming-reassembly tests' intent explicit and
-# matches the convention `openspace-shared` established for round-
-# trip fixtures.
+# `serde_json` is also a runtime dep, but listing it as a dev-dep
+# in parallel makes the streaming-reassembly tests' intent
+# explicit and matches the convention `openspace-shared`
+# established for round-trip fixtures.
 serde_json = { workspace = true }
+# Tests need extra tokio surface (TCP listener, IO traits) that
+# production code does not.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "sync", "net", "io-util"] }
+wiremock = { workspace = true }
 
 [features]
-# Default features stay empty so production builds never carry the
-# in-memory secret-store double. Downstream crates that want the
-# fixture opt in via `[dev-dependencies]`:
+# Default features stay empty so production builds carry only the
+# transport surface and never the in-memory secret-store double or
+# approval-channel stubs.
+#
+# Downstream crates that want any of those opt in via
+# `[dev-dependencies]`:
 #   openspace-ai-providers = { path = "...", features = ["test-support"] }
 default = []
 
-# `test-support` gates the `InMemorySecretStore` fixture. Mirrors the
-# convention `openspace-shared` established — feature-gated test
-# scaffolding lives next to the production code so a swap-in test
-# double cannot drift from the real trait surface, but the fixture
-# itself is never compiled into a release artefact.
+# `test-support` gates the test scaffolding: `InMemorySecretStore`
+# (issue #43) and the approval-channel stubs (`AlwaysApprove`,
+# `AlwaysDeny`, `NeverAnswer`, `ScriptedChannel` — issue #44).
+# Mirrors the convention `openspace-shared` established —
+# feature-gated test scaffolding lives next to the production
+# code so a swap-in test double cannot drift from the real trait
+# surface, but the fixture itself is never compiled into a
+# release artefact.
 test-support = []
+
+# Integration tests in `tests/sandboxed_http_client.rs` consume the
+# `test_support` module, which is itself behind the `test-support`
+# feature. Declaring `required-features` here means `cargo test`
+# (no flags) skips the integration test cleanly, while
+# `cargo test --features test-support` picks it up — exactly the
+# acceptance-criteria invocation in issue #44.
+[[test]]
+name = "sandboxed_http_client"
+path = "tests/sandboxed_http_client.rs"
+required-features = ["test-support"]
 
 [lints]
 workspace = true
