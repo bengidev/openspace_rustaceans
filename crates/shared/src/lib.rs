@@ -10,6 +10,7 @@
 //! cyclic dependencies." Speculative types invite drift.
 
 pub mod error;
+pub mod id;
 
 /// Test fixtures shared across the workspace — `ScriptedProvider`,
 /// `MockTool`, `TempWorkspace`, etc. Currently empty; later PRD-01
