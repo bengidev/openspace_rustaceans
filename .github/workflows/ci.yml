@@ -1,10 +1,15 @@
-# Minimal CI for the workspace tracer-bullet slice.
+# CI for the workspace.
 #
-# Scope is intentionally narrow: a single Linux runner that proves
-# `cargo build --workspace` and `cargo test --workspace` stay green.
-# Lint gates (clippy, fmt) and the cross-platform matrix land in the
-# next slice — keeping this file small means the tracer bullet has
-# automated verification from day one without front-loading complexity.
+# Runs `cargo build --workspace` and `cargo test --workspace` across the
+# three platforms we support: ubuntu-latest, macos-latest, windows-latest.
+# A single Linux runner caught the easy regressions during the tracer
+# slice, but platform-specific breakage (path separators, line endings,
+# OS-only deps) only shows up under a real matrix.
+#
+# Lint gates run as separate jobs:
+#   - clippy: catches lint debt; runs once on Linux because lint output
+#     is platform-independent and a 3x matrix would just burn minutes.
+#   - fmt: enforces a single canonical layout across the workspace.
 
 name: CI
 
@@ -15,7 +20,8 @@ on:
     branches: [main]
 
 # Cancel in-flight runs on the same ref when a new commit lands so we
-# never burn CI minutes on superseded work.
+# never burn CI minutes on superseded work. The matrix expansion makes
+# this more valuable: a force-push now cancels three jobs, not one.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -30,7 +36,37 @@ env:
 
 jobs:
   build-and-test:
-    name: build + test (ubuntu-latest)
+    name: build + test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # One platform's failure should not abort the others — we want to
+      # see every red signal on a single run, not chase them one by one.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (from rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Per-OS cache key so Linux/macOS/Windows do not poison each
+          # other's target dir. The action already partitions by runner
+          # OS; this makes the intent explicit for future readers.
+          shared-key: ${{ matrix.os }}
+
+      - name: cargo build --workspace
+        run: cargo build --workspace --locked
+
+      - name: cargo test --workspace
+        run: cargo test --workspace --locked
+
+  clippy:
+    name: clippy (-D warnings)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -41,9 +77,28 @@ jobs:
 
       - name: Cache cargo registry + target
         uses: Swatinem/rust-cache@v2
+        with:
+          # Separate cache namespace from build-and-test so clippy's
+          # incremental artefacts (different codegen flags) do not
+          # invalidate the build job's cache and vice versa.
+          shared-key: clippy
 
-      - name: cargo build --workspace
-        run: cargo build --workspace --locked
+      - name: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
-      - name: cargo test --workspace
-        run: cargo test --workspace --locked
+  fmt:
+    name: fmt (--check)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (from rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@stable
+
+      # No cargo cache here on purpose: rustfmt does not compile, so a
+      # cache restore would cost more than the check itself. Keeping the
+      # job dependency-free also means fmt stays green even when the
+      # registry is flaky.
+      - name: cargo fmt --all -- --check
+        run: cargo fmt --all -- --check
