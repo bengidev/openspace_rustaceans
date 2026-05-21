@@ -1174,6 +1174,317 @@ mod tests {
         assert_eq!(req.max_tokens, DEFAULT_MAX_TOKENS);
     }
 
+    // ─────────────────────────────────────────────────────────────────
+    // Tool-calling + vision: outgoing wire shape
+    // ─────────────────────────────────────────────────────────────────
+
+    /// Headline acceptance criterion for Slice 9: the four content
+    /// kinds (text, tool_use, tool_result, image) all serialise into
+    /// the documented wire shape.
+    #[test]
+    fn part_to_content_covers_every_domain_variant() {
+        let text = part_to_content(&Part::Text("hi".into())).expect("text maps");
+        let tool_use = part_to_content(&Part::ToolCall {
+            id: "call_1".into(),
+            name: "search".into(),
+            arguments: serde_json::json!({"q": "rust"}),
+        })
+        .expect("tool_use maps");
+        let tool_result = part_to_content(&Part::ToolResult {
+            call_id: "call_1".into(),
+            content: serde_json::json!({"hits": 7}),
+            is_error: false,
+        })
+        .expect("tool_result maps");
+        let image_url = part_to_content(&Part::Image {
+            mime: "image/png".into(),
+            data: ImagePayload::Url("https://example.invalid/x.png".into()),
+        })
+        .expect("image url maps");
+        let image_bytes = part_to_content(&Part::Image {
+            mime: "image/jpeg".into(),
+            data: ImagePayload::Bytes(vec![0xFF, 0xD8, 0xFF, 0xE0]),
+        })
+        .expect("image bytes map");
+
+        let rendered =
+            serde_json::to_string(&[text, tool_use, tool_result, image_url, image_bytes])
+                .expect("serialize content");
+
+        // Text block.
+        assert!(rendered.contains(r#""type":"text""#));
+        assert!(rendered.contains(r#""text":"hi""#));
+        // Tool-use block.
+        assert!(rendered.contains(r#""type":"tool_use""#));
+        assert!(rendered.contains(r#""id":"call_1""#));
+        assert!(rendered.contains(r#""name":"search""#));
+        // Tool-result block.
+        assert!(rendered.contains(r#""type":"tool_result""#));
+        assert!(rendered.contains(r#""tool_use_id":"call_1""#));
+        assert!(rendered.contains(r#""is_error":false"#));
+        // Image (URL) block.
+        assert!(rendered.contains(r#""type":"image""#));
+        assert!(rendered.contains(r#""type":"url""#));
+        assert!(rendered.contains(r#""url":"https://example.invalid/x.png""#));
+        // Image (base64) block — value is base64-encoded, not raw.
+        assert!(rendered.contains(r#""type":"base64""#));
+        assert!(rendered.contains(r#""media_type":"image/jpeg""#));
+        // 0xFF 0xD8 0xFF 0xE0 → "/9j/4A==" in standard base64.
+        assert!(
+            rendered.contains(r#""data":"/9j/4A==""#),
+            "expected base64 payload in {rendered}"
+        );
+    }
+
+    /// Tool turns fold onto user-side messages. The acceptance
+    /// criteria call this out: tool results are user-side input in
+    /// the alternative wire format.
+    #[test]
+    fn tool_role_turns_render_as_user_messages() {
+        let conv = Conversation::new(
+            ChatId::new_v4(),
+            None,
+            vec![
+                Turn::new(
+                    TurnId::new_v4(),
+                    Role::Assistant,
+                    vec![Part::ToolCall {
+                        id: "c1".into(),
+                        name: "lookup".into(),
+                        arguments: serde_json::json!({}),
+                    }],
+                    DateTime::<Utc>::from_timestamp(1_700_000_000, 0).expect("ts"),
+                    None,
+                ),
+                Turn::new(
+                    TurnId::new_v4(),
+                    Role::Tool,
+                    vec![Part::ToolResult {
+                        call_id: "c1".into(),
+                        content: serde_json::json!({"ok": true}),
+                        is_error: false,
+                    }],
+                    DateTime::<Utc>::from_timestamp(1_700_000_001, 0).expect("ts"),
+                    None,
+                ),
+            ],
+            None,
+        );
+        let req = build_request_body(
+            &conv,
+            &ModelRef::new(PROVIDER_ID, "claude-3-5-sonnet-latest"),
+            &GenerationParams::default(),
+        );
+        assert_eq!(req.messages.len(), 2);
+        assert_eq!(req.messages[0].role, "assistant");
+        assert_eq!(req.messages[1].role, "user");
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // Capability discovery + capability-mismatch guard
+    // ─────────────────────────────────────────────────────────────────
+
+    /// Catalogue is non-empty and every entry carries the provider id.
+    /// Belt-and-braces against a future refactor accidentally wiring
+    /// up a row whose `provider_id` does not match
+    /// [`PROVIDER_ID`] — the agent loop relies on that invariant
+    /// when dispatching by `provider_id`.
+    #[test]
+    fn catalogue_rows_share_provider_id_and_advertise_streaming() {
+        let catalogue = model_catalogue();
+        assert!(!catalogue.is_empty(), "catalogue must not be empty");
+        for info in &catalogue {
+            assert_eq!(info.model_ref.provider_id, PROVIDER_ID);
+            assert!(
+                info.capabilities.streaming,
+                "every catalogue row must advertise streaming"
+            );
+            assert!(info.context_window > 0, "context window must be populated");
+        }
+    }
+
+    /// Known multimodal id resolves to all three capability flags;
+    /// known legacy id resolves to text-only; unknown id falls back
+    /// to the conservative baseline.
+    #[test]
+    fn capabilities_lookup_covers_known_and_unknown_ids() {
+        let multimodal = model_capabilities_for("claude-3-5-sonnet-latest");
+        assert!(multimodal.vision);
+        assert!(multimodal.tool_calling);
+        assert!(multimodal.streaming);
+
+        let legacy = model_capabilities_for("claude-2.1");
+        assert!(!legacy.vision);
+        assert!(!legacy.tool_calling);
+        assert!(legacy.streaming);
+
+        let unknown = model_capabilities_for("not-a-real-model-id");
+        assert!(!unknown.vision);
+        assert!(!unknown.tool_calling);
+        assert!(unknown.streaming, "fallback must still allow streaming");
+    }
+
+    /// Image input on a non-vision model surfaces the reason string
+    /// the chat-stream guard wraps in `AiError::Unsupported`.
+    #[test]
+    fn capability_check_rejects_image_on_text_only_model() {
+        let conv = Conversation::new(
+            ChatId::new_v4(),
+            None,
+            vec![Turn::new(
+                TurnId::new_v4(),
+                Role::User,
+                vec![Part::Image {
+                    mime: "image/png".into(),
+                    data: ImagePayload::Url("https://example.invalid/x.png".into()),
+                }],
+                DateTime::<Utc>::from_timestamp(1_700_000_000, 0).expect("ts"),
+                None,
+            )],
+            None,
+        );
+        let err = check_capabilities(&ModelRef::new(PROVIDER_ID, "claude-2.1"), &conv)
+            .expect_err("image on legacy text-only must reject");
+        assert!(err.contains("image input on a non-vision model"));
+    }
+
+    /// Tool-call parts on a tool-less model surface the matching
+    /// reason string.
+    #[test]
+    fn capability_check_rejects_tool_call_on_tool_less_model() {
+        let conv = Conversation::new(
+            ChatId::new_v4(),
+            None,
+            vec![Turn::new(
+                TurnId::new_v4(),
+                Role::Assistant,
+                vec![Part::ToolCall {
+                    id: "c1".into(),
+                    name: "lookup".into(),
+                    arguments: serde_json::json!({}),
+                }],
+                DateTime::<Utc>::from_timestamp(1_700_000_000, 0).expect("ts"),
+                None,
+            )],
+            None,
+        );
+        let err = check_capabilities(&ModelRef::new(PROVIDER_ID, "claude-2.1"), &conv)
+            .expect_err("tool call on legacy text-only must reject");
+        assert!(err.contains("tool calling on a tool-less model"));
+    }
+
+    /// All-text conversation with a multimodal-capable model passes
+    /// the gate cleanly. Pins the negative-space invariant — the
+    /// guard does not over-fire.
+    #[test]
+    fn capability_check_passes_text_only_conversation() {
+        let conv = Conversation::new(
+            ChatId::new_v4(),
+            None,
+            vec![turn(Role::User, "hello")],
+            None,
+        );
+        check_capabilities(
+            &ModelRef::new(PROVIDER_ID, "claude-3-5-sonnet-latest"),
+            &conv,
+        )
+        .expect("plain text on multimodal model must pass");
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // Tool-call streaming wire events
+    // ─────────────────────────────────────────────────────────────────
+
+    /// `content_block_start` for a `tool_use` block emits the first
+    /// delta carrying `name = Some(_)` and an empty arguments
+    /// fragment. Later `input_json_delta` events for the same index
+    /// emit `name = None` deltas with the JSON fragment as
+    /// `arguments_delta`.
+    #[test]
+    fn tool_call_streaming_threads_id_through_input_json_deltas() {
+        let mut index_map = std::collections::BTreeMap::new();
+
+        // 1. Start event introduces the tool call with id+name.
+        let start = parse_wire_event(
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call_42","name":"search"}}"#,
+            &mut index_map,
+        )
+        .expect("parse start")
+        .expect("start emits");
+        match start {
+            StreamEvent::ToolCallDelta(delta) => {
+                assert_eq!(delta.call_id, "call_42");
+                assert_eq!(delta.name.as_deref(), Some("search"));
+                assert_eq!(delta.arguments_delta, "");
+            }
+            other => panic!("expected ToolCallDelta on start, got {other:?}"),
+        }
+
+        // 2. JSON fragment delta carries name=None, arg fragment.
+        let frag = parse_wire_event(
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"q\":\"a"}}"#,
+            &mut index_map,
+        )
+        .expect("parse delta")
+        .expect("delta emits");
+        match frag {
+            StreamEvent::ToolCallDelta(delta) => {
+                assert_eq!(delta.call_id, "call_42");
+                assert!(delta.name.is_none());
+                assert_eq!(delta.arguments_delta, "{\"q\":\"a");
+            }
+            other => panic!("expected ToolCallDelta on delta, got {other:?}"),
+        }
+
+        // 3. Stop forgets the index → next call at the same index
+        //    cannot bleed arguments from this one.
+        let stop = parse_wire_event(r#"{"type":"content_block_stop","index":0}"#, &mut index_map)
+            .expect("parse stop");
+        assert!(stop.is_none(), "stop emits no event by itself");
+        assert!(index_map.is_empty());
+    }
+
+    /// `input_json_delta` arriving for an index we never saw start
+    /// surfaces as a parse error rather than silently emitting a
+    /// delta with a fabricated `call_id`.
+    #[test]
+    fn input_json_delta_without_matching_start_surfaces_parse_error() {
+        let mut index_map = std::collections::BTreeMap::new();
+        let err = parse_wire_event(
+            r#"{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"{}"}}"#,
+            &mut index_map,
+        )
+        .expect_err("must surface parse error");
+        assert!(err.contains("unknown content block index"), "got: {err}");
+    }
+
+    /// Multi-turn stream: two back-to-back tool calls at the same
+    /// index slot. The second `start` reseeds the index map after the
+    /// first `stop` cleared it, so deltas after the second start
+    /// route to the second call's id.
+    #[test]
+    fn multi_turn_tool_calls_route_to_distinct_ids() {
+        let mut index_map = std::collections::BTreeMap::new();
+        for line in [
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"a","name":"first"}}"#,
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{}"}}"#,
+            r#"{"type":"content_block_stop","index":0}"#,
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"b","name":"second"}}"#,
+        ] {
+            parse_wire_event(line, &mut index_map).expect("parse");
+        }
+        let frag = parse_wire_event(
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"x\":1}"}}"#,
+            &mut index_map,
+        )
+        .expect("parse")
+        .expect("emits");
+        match frag {
+            StreamEvent::ToolCallDelta(delta) => assert_eq!(delta.call_id, "b"),
+            other => panic!("expected ToolCallDelta with id=b, got {other:?}"),
+        }
+    }
+
     /// JSON-NL parser handles partial chunks split across reads.
     #[test]
     fn json_nl_parser_reassembles_split_lines() {
