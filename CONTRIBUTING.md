@@ -12,6 +12,39 @@ conventions, and quality expectations for changes to this repository.
   PR description rather than silently overriding the decision.
 - Follow the `CODE_OF_CONDUCT.md`.
 
+## Naming third-party references
+
+Do **not** name other products, vendors, or peer projects in committed
+artefacts. This applies to:
+
+- Source code and inline comments.
+- Documentation under `docs/` and at the repo root.
+- Commit messages, PR titles, and PR descriptions.
+- Issue titles and bodies, including triage notes.
+- ADRs in `docs/adr/`.
+
+Use an **abstract alias** instead. The alias should describe the *role*
+the reference plays, not the brand. Examples:
+
+| Don't write                           | Write                                |
+| ------------------------------------- | ------------------------------------ |
+| "like &lt;chat product X&gt;"               | "like a best-in-class peer editor"   |
+| "the &lt;model vendor Y&gt; API"            | "a hosted provider adapter"          |
+| "&lt;local engine Z&gt; ships with…"        | "a local engine adapter ships with…" |
+| "inspired by &lt;framework W&gt;"           | "an industry-standard pattern"       |
+| "we want parity with &lt;tool V&gt;"        | "we want parity with peer tools"     |
+
+If you cannot find an alias that carries the meaning, drop the comparison
+and describe the behaviour directly. The reader does not need the brand to
+understand the requirement.
+
+This rule holds **even when an issue, design note, or chat thread named the
+reference explicitly**. Inspirations and references can sit in private
+notes, not in the repository's public history.
+
+The same constraint applies to AI coding agents working in this repo — see
+`AGENTS.md`.
+
 ## Getting set up
 
 OpenSpace targets a stable Rust toolchain. Once the crate manifest lands:

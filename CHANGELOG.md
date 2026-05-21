@@ -17,6 +17,8 @@ once a `0.1.0` is cut.
   - `0001-record-architecture-decisions.md`
   - `0002-core-operating-modes.md`
   - `0003-rust-as-implementation-language.md`
+- Naming convention forbidding third-party product references in committed
+  artefacts (`CONTRIBUTING.md`, mirrored in `AGENTS.md`).
 
 ### Changed
 - _Nothing yet._
