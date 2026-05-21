@@ -1,0 +1,49 @@
+# Minimal CI for the workspace tracer-bullet slice.
+#
+# Scope is intentionally narrow: a single Linux runner that proves
+# `cargo build --workspace` and `cargo test --workspace` stay green.
+# Lint gates (clippy, fmt) and the cross-platform matrix land in the
+# next slice — keeping this file small means the tracer bullet has
+# automated verification from day one without front-loading complexity.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel in-flight runs on the same ref when a new commit lands so we
+# never burn CI minutes on superseded work.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Network-driven flake guard: cargo's resolver retries on transient
+  # registry failures, but the default of 0 means a single hiccup fails
+  # the run. Three retries adds resilience without masking real outages.
+  CARGO_NET_RETRY: "3"
+  RUSTUP_MAX_RETRIES: "3"
+
+jobs:
+  build-and-test:
+    name: build + test (ubuntu-latest)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (from rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo build --workspace
+        run: cargo build --workspace --locked
+
+      - name: cargo test --workspace
+        run: cargo test --workspace --locked

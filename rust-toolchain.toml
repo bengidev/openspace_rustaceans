@@ -1,0 +1,13 @@
+# Pinned Rust toolchain for OpenSpace.
+#
+# We pin to stable so contributors get the same compiler regardless of
+# whatever channel their local rustup default points at.
+#
+# MSRV policy: stable minus one. As of this commit, stable is 1.95 so the
+# effective MSRV floor is 1.94. Bump explicitly when a feature requires it,
+# never silently. CI matrix should include the MSRV floor once it lands.
+
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

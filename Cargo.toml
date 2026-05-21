@@ -1,0 +1,53 @@
+# Cargo workspace root for OpenSpace.
+#
+# The workspace is the single source of truth for shared metadata
+# (edition, license, version axis) and shared dependency versions.
+# Individual crates inherit what they need via `workspace = true`.
+#
+# Membership uses an explicit list for the top-level crates plus a glob
+# for sub-features so adding a new sub-feature only requires creating
+# its folder, not editing this manifest.
+
+[workspace]
+resolver = "2"
+members = [
+    "crates/app",
+    "crates/shared",
+    "crates/feature-welcome",
+    "crates/feature-home",
+    "crates/feature-home/sub-features/*",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/bengidev/openspace_rustaceans"
+rust-version = "1.94"
+
+# Shared dependency versions. Crates opt in per-feature with
+# `dep = { workspace = true }`; declaring here prevents version drift.
+[workspace.dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tracing = "0.1"
+thiserror = "1"
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Release profile tuned for distributable binaries: full optimisation,
+# thin LTO, single codegen unit, stripped symbols, abort on panic. The
+# trade-off is longer link times in exchange for smaller, faster output;
+# acceptable for an MVP that ships via release artefacts.
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
+
+# Dev profile keeps our own crates at the default opt-level so iteration
+# is fast, but bumps third-party dependencies to opt-level 1 so debug
+# builds do not crawl through unoptimised dep code on every run.
+[profile.dev.package."*"]
+opt-level = 1
