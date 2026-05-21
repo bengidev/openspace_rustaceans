@@ -61,6 +61,7 @@
 #![forbid(unsafe_code)]
 
 pub mod accumulator;
+pub mod anthropic;
 
 mod client;
 mod error;
@@ -72,6 +73,7 @@ mod in_memory_secret_store;
 pub mod test_support;
 
 pub use accumulator::{AccumulatorError, ToolCall, ToolCallAccumulator};
+pub use anthropic::AnthropicProvider;
 pub use client::{SandboxedHttpClient, DEFAULT_APPROVAL_TIMEOUT};
 pub use error::HttpClientError;
 
