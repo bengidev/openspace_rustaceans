@@ -32,6 +32,12 @@ description = "AI provider adapters and supporting infrastructure for OpenSpace.
 # the AI Domain types the streaming accumulator emits.
 openspace-shared = { path = "../shared" }
 async-trait = { workspace = true }
+# `base64` is used by the alternative wire-format adapter to encode
+# inline image bytes (`Part::Image` with `ImagePayload::Bytes`) into
+# the wire-format `image` content block's `source.data` field. Pulled
+# from the workspace pin so later adapters that need the same encoding
+# share a version.
+base64 = { workspace = true }
 # `async-stream` lets the alternative wire-format adapter compose the
 # byte-stream → JSON-NL parse → `StreamEvent` pipeline as a single
 # `try_stream!` block. Hand-rolling the equivalent state machine on
