@@ -1,0 +1,31 @@
+# EditorConfig: https://editorconfig.org
+#
+# Normalises whitespace, line endings, and charset across editors so the repo
+# stays consistent regardless of contributor IDE settings.
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+[*.rs]
+indent_size = 4
+
+[*.md]
+# Markdown uses two trailing spaces for a hard line break, so do not strip
+# trailing whitespace on this filetype.
+trim_trailing_whitespace = false
+
+[*.{yml,yaml}]
+indent_size = 2
+
+[*.toml]
+indent_size = 2
+
+[Makefile]
+indent_style = tab

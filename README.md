@@ -11,6 +11,40 @@ shell, one context, and one set of AI capabilities.
 > the product, not a finished implementation. See `docs/roadmap.md` for the
 > rollout plan.
 
+## ⚠️ WARNING
+
+OpenSpace is in pre-release development. Read the disclosures below before
+running the assistant against work you care about.
+
+- **Trust modes — Guarded, Fast, YOLO.** The shell exposes three trust modes
+  that gate side-effecting tools.
+  - **Guarded** *(default)*: every tool call that touches the filesystem,
+    runs a shell command, or hits the network requires per-call user
+    consent. Read-only inspection (open buffer, current directory listing)
+    runs without a prompt.
+  - **Fast**: per-call consent is replaced with a session-scoped allow list.
+    The assistant may run pre-approved tool categories without re-prompting,
+    but destructive operations (delete, overwrite, force-push) still require
+    confirmation.
+  - **YOLO**: all tool calls execute without a prompt, including destructive
+    operations. Intended for sandboxed environments only. Do not enable on a
+    machine that holds work you cannot afford to lose.
+- **No built-in sensitive-path blocklist.** At this stage the assistant has
+  no allowlist or denylist for paths it should refuse to read or write
+  (e.g. `~/.ssh`, password stores, browser profiles). Keeping the assistant
+  out of paths you consider sensitive is the user's responsibility — scope
+  workspaces accordingly and prefer Guarded mode when working from a home
+  directory.
+- **Math and diagram rendering require an external runtime.** Inline math
+  and diagram blocks in chat and editor surfaces depend on a rendering
+  runtime that is planned but not yet shipped. Until it lands, those blocks
+  fall back to their source text. See `docs/roadmap.md`.
+- **Distributed binaries are unsigned at MVP.** Pre-release builds are not
+  code-signed or notarised. On macOS, Windows, and Linux desktop targets
+  the operating system will warn that the binary is from an unidentified
+  developer; users must explicitly accept the platform's unsigned-binary
+  prompt to launch it. Signing will follow a tagged release.
+
 ## Why OpenSpace
 
 Most assistant experiences treat AI as a side channel — copy code out, paste
