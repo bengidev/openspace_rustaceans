@@ -51,3 +51,27 @@ panic = "abort"
 # builds do not crawl through unoptimised dep code on every run.
 [profile.dev.package."*"]
 opt-level = 1
+
+# Workspace-level lint policy. Each crate opts in via `[lints] workspace =
+# true`, so the rules live in one place and stay in lockstep across the
+# tree. CI promotes these warnings to errors via `-D warnings`; locally
+# they stay as warnings so iteration is not blocked by stylistic noise
+# the developer has not yet addressed.
+#
+# Notes on choices:
+#   - `unsafe_code = "warn"` keeps unsafe deliberate without forbidding it
+#     outright; sub-features like terminal will need it eventually.
+#   - `unreachable_pub` flags items that are pub but never reachable from
+#     the crate root, which is a frequent source of accidental API leak.
+#   - `rust_2018_idioms` and `clippy::all` are lint groups; they need
+#     `priority = -1` so individual overrides above can still fire.
+#   - `missing_docs` is intentionally omitted at this stage — the
+#     placeholder modules are scaffolding and adding doc stubs to them
+#     would be churn. Re-evaluate once real types land in PRD-01.
+[workspace.lints.rust]
+unsafe_code = "warn"
+unreachable_pub = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }

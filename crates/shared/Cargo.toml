@@ -6,3 +6,6 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 description = "Shared types and utilities used across OpenSpace crates."
+
+[lints]
+workspace = true

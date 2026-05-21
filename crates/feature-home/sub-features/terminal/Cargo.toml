@@ -6,3 +6,6 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 description = "Terminal mode — interactive shell with AI sidekick."
+
+[lints]
+workspace = true
