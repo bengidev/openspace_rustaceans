@@ -9,7 +9,7 @@
 # Lint gates run as separate jobs:
 #   - clippy: catches lint debt; runs once on Linux because lint output
 #     is platform-independent and a 3x matrix would just burn minutes.
-#   - fmt: lands in a follow-up commit in the same slice.
+#   - fmt: enforces a single canonical layout across the workspace.
 
 name: CI
 
@@ -85,3 +85,20 @@ jobs:
 
       - name: cargo clippy --workspace --all-targets -- -D warnings
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  fmt:
+    name: fmt (--check)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (from rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@stable
+
+      # No cargo cache here on purpose: rustfmt does not compile, so a
+      # cache restore would cost more than the check itself. Keeping the
+      # job dependency-free also means fmt stays green even when the
+      # registry is flaky.
+      - name: cargo fmt --all -- --check
+        run: cargo fmt --all -- --check
