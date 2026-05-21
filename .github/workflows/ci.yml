@@ -102,3 +102,33 @@ jobs:
       # registry is flaky.
       - name: cargo fmt --all -- --check
         run: cargo fmt --all -- --check
+
+  doc:
+    name: doc (-D warnings)
+    runs-on: ubuntu-latest
+    # Doc generation is platform-independent, so a single runner is
+    # enough. Keeping it as its own job (rather than folding into
+    # build-and-test) means a doc-rot regression shows up as a clearly
+    # labelled red check instead of a generic build failure.
+    env:
+      # Promote rustdoc warnings (broken intra-doc links, missing crate
+      # items, etc.) to hard errors. Doc rot is otherwise invisible
+      # until someone actually runs `cargo doc` locally, which is rare.
+      RUSTDOCFLAGS: "-D warnings"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (from rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Separate cache namespace from build-and-test and clippy so
+          # the rustdoc artefacts (different output dir, different
+          # incremental keys) do not invalidate sibling jobs.
+          shared-key: doc
+
+      - name: cargo doc --workspace --no-deps
+        run: cargo doc --workspace --no-deps --locked
