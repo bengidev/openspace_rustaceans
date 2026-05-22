@@ -835,6 +835,12 @@ name = "openspace-persistence"
 version = "0.1.0"
 dependencies = [
  "openspace-shared",
+ "serde",
+ "static_assertions",
+ "tempfile",
+ "tokio",
+ "toml",
+ "tracing",
 ]
 
 [[package]]

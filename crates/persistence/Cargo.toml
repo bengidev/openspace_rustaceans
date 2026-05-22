@@ -7,36 +7,79 @@ repository.workspace = true
 rust-version.workspace = true
 description = "On-disk persistence for OpenSpace — SQLite-backed repositories and the settings TOML pipeline."
 
-# Foundation slice — this crate currently carries no implementation
-# code. PRD-03 lands the SQLite/FTS5-backed repositories, the
-# settings-TOML pipeline, and the migration runner across follow-up
-# slices; this manifest exists today so:
+# PRD-03 lands the SQLite/FTS5-backed repositories, the settings-TOML
+# pipeline, and the migration runner across follow-up slices. The
+# foundation slice (issue #63) shipped this crate as a skeleton so:
 #
-#   - the workspace member shape is in place before downstream slices
-#     start adding `[dependencies]`;
-#   - `openspace-shared::persistence`'s trait surface has a concrete
+#   - the workspace member shape was in place before downstream slices
+#     started adding `[dependencies]`;
+#   - `openspace-shared::persistence`'s trait surface had a concrete
 #     home for its impls without retroactively wiring a new crate;
-#   - the build / test / clippy / rustdoc gates run green from the
+#   - the build / test / clippy / rustdoc gates ran green from the
 #     first slice rather than breaking on the second.
+#
+# Slice 3 (issue #65) then introduced `SettingsStore` — the in-process
+# owner of `settings.toml` — and pulled in the deps needed to read,
+# atomically write, and roundtrip the TOML shape on the blocking pool.
 #
 # Hard rules (mirrors the conventions `openspace-ai-providers`
 # established):
 #
 #   - Domain types (the repository trait surface, `PersistenceError`,
-#     supporting handle types) live in `openspace-shared`. This crate
-#     consumes them; nothing here leaks back into the Domain layer.
-#   - Storage backends, SQL, file IO, and migration plumbing are
-#     in scope for *this* crate, never for `openspace-shared`. The
-#     Domain crate must stay testable without a database file.
+#     supporting handle types, `Settings`) live in `openspace-shared`.
+#     This crate consumes them; nothing here leaks back into the
+#     Domain layer.
+#   - Storage backends, SQL, file IO, atomic-write semantics, and
+#     migration plumbing are in scope for *this* crate, never for
+#     `openspace-shared`. The Domain crate must stay testable without
+#     a database file or a settings.toml on disk.
 #   - No third-party product names enter identifiers, doc comments,
 #     or error strings — the abstract aliases ("on-disk store",
 #     "SQL backend", "settings file") carry the meaning instead.
 [dependencies]
 # Pulled in so the impl crate can reach the trait surface, the error
-# enum, and the supporting handle types it implements. No other
-# dependencies today — downstream slices add the SQL driver, the TOML
-# parser, and the migration helpers when their PRD-03 issues land.
+# enum, the supporting handle types it implements, and the `Settings`
+# schema the `SettingsStore` reads / writes.
 openspace-shared = { path = "../shared" }
+
+# `tokio` carries the blocking pool the `SettingsStore` dispatches
+# file IO onto (`spawn_blocking`) so the UI thread never blocks on
+# disk operations — US#9 in PRD-03. We pull `rt` for the runtime
+# handle, `sync` for `Mutex` (the write serialiser), and `macros` so
+# the unit tests in this crate can use `#[tokio::test]`.
+tokio = { workspace = true, features = ["rt", "sync", "macros"] }
+
+# `toml` is the wire-format encoder/decoder for `settings.toml`.
+# Workspace pin keeps it in lockstep with the read-side fixtures in
+# `openspace-shared::settings`.
+toml = { workspace = true }
+
+# `serde` is reached for derives on the internal write-pipeline
+# types (the `SettingsStore` itself does not derive serde, but
+# downstream slices in this crate will, and pulling the workspace
+# pin once keeps the surface stable).
+serde = { workspace = true }
+
+# `tracing` is used to emit a structured event when the atomic write
+# fails partway through so operators have a breadcrumb trail without
+# the store leaking partial-write detail through the error surface.
+tracing = { workspace = true }
+
+# `static_assertions` pins the `Send + Sync` invariant on the
+# `SettingsStore` at compile time. Matches the convention every
+# other crate in the workspace established.
+static_assertions = { workspace = true }
+
+[dev-dependencies]
+# `tempfile` provides isolated scratch directories for the
+# `SettingsStore` tests — each test owns its own tempdir that is
+# cleaned up regardless of pass / fail.
+tempfile = { workspace = true }
+# Tests need extra tokio surface (`rt-multi-thread`, `time`) that
+# production code does not — `#[tokio::test(flavor = "multi_thread")]`
+# is what exercises the `spawn_blocking` path in the atomic-write
+# scenarios.
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
 
 [lints]
 workspace = true
