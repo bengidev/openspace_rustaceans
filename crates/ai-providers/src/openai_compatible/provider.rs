@@ -89,6 +89,7 @@ use static_assertions::assert_impl_all;
 
 use crate::client::SandboxedHttpClient;
 
+use super::aggregator::{AttributionMode, AGGREGATOR_BASE_URL, HEADER_REFERER, HEADER_TITLE};
 use super::catalogue::{capabilities_for, make_model_info};
 use super::error_map::map_status;
 use super::request::{
@@ -182,6 +183,53 @@ impl OpenAiCompatibleProvider {
     #[must_use]
     pub fn model_filter(&self) -> Option<&str> {
         self.model_filter.as_deref()
+    }
+
+    /// Preset constructor for the hosted multi-model aggregator
+    /// that exposes the same `/v1/chat/completions` wire format.
+    ///
+    /// Pre-fills the documented base URL and, when
+    /// [`AttributionMode::OptIn`] is selected, attaches the
+    /// canonical attribution headers. The default app behaviour
+    /// passes [`AttributionMode::Off`]; the opt-in path is a
+    /// deliberate user action surfaced later by the settings layer.
+    ///
+    /// `id` and `display_name` mirror [`Self::new`] — callers pick
+    /// values that fit their provider registry. `app_name` is
+    /// retained on the struct as the `display_name` argument when
+    /// the caller wants the title header to track the same value;
+    /// keeping the parameters explicit (rather than fusing
+    /// `display_name` and `app_name`) lets the registry name and
+    /// the dashboard attribution differ without surprising
+    /// downstream code.
+    ///
+    /// This forwards into [`Self::new`] and
+    /// [`Self::with_extra_header`]; the streaming, error-mapping,
+    /// and cancellation contracts are identical to the bare
+    /// [`OpenAiCompatibleProvider`].
+    #[must_use]
+    pub fn aggregator(
+        id: impl Into<String>,
+        display_name: impl Into<String>,
+        api_key_ref: SecretRef,
+        secret_store: Arc<dyn SecretStore>,
+        http: Arc<SandboxedHttpClient>,
+        attribution: AttributionMode,
+    ) -> Self {
+        let provider = Self::new(
+            id,
+            display_name,
+            AGGREGATOR_BASE_URL,
+            api_key_ref,
+            secret_store,
+            http,
+        );
+        match attribution {
+            AttributionMode::Off => provider,
+            AttributionMode::OptIn { referer, title } => provider
+                .with_extra_header(HEADER_REFERER, referer)
+                .with_extra_header(HEADER_TITLE, title),
+        }
     }
 }
 

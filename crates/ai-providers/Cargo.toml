@@ -174,5 +174,16 @@ name = "openai_compatible"
 path = "tests/openai_compatible.rs"
 required-features = ["test-support"]
 
+# Same gating as every other adapter test file: the registry
+# integration test seeds an `InMemorySecretStore` and an approval
+# channel double, both of which live behind `test-support`. Declaring
+# `required-features` here keeps `cargo test` (no flags) skipping the
+# file cleanly while `cargo test --features test-support` picks it
+# up — the exact invocation issue #52's acceptance criteria require.
+[[test]]
+name = "provider_registry"
+path = "tests/provider_registry.rs"
+required-features = ["test-support"]
+
 [lints]
 workspace = true
