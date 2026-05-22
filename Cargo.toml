@@ -120,6 +120,13 @@ tempfile = "3"
 # on the same major version so a single bump moves the whole
 # persistence layer in lockstep.
 rusqlite = { version = "0.32", features = ["bundled"] }
+# `tokio_rusqlite` is the async wrapper around `rusqlite` that the
+# persistence crate's database handle exposes to repositories. Every
+# repository call dispatches through `tokio_rusqlite::Connection::call`
+# onto the blocking pool so the UI thread never blocks on a SQL query —
+# US#9 in PRD-03. The version tracks the workspace `rusqlite` pin so a
+# single `cargo update` moves both in lockstep.
+tokio-rusqlite = { version = "0.6", features = ["bundled"] }
 # `notify` is the cross-platform filesystem watcher backing
 # `SettingsStore`'s hot-reload path (PRD-03 Slice 4). The crate wraps
 # the OS-native primitives (FSEvents on macOS, inotify on Linux,
