@@ -23,6 +23,10 @@
 //!   canonical string form via [`KeyBinding::parse`] and the
 //!   [`fmt::Display`] impl. The serde shape is the same string so
 //!   persisted profiles read like plain config: `"ctrl+shift+p"`.
+//! - [`KeybindingProfileId`] — stable slug newtype that identifies a
+//!   profile (`"default"`, `"vim"`, …). Lives in the Domain layer so
+//!   downstream settings types can reference profiles by a typed
+//!   handle instead of a free-form string.
 //! - [`KeybindingProfile`] — named bag of bindings, keyed by
 //!   [`CommandId`]. Each command may carry multiple bindings (a
 //!   primary plus alternates).
@@ -667,6 +671,69 @@ fn function_key(n: u8) -> Option<Key> {
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// KeybindingProfileId — stable slug newtype identifying a profile.
+// Mirrors the convention used by every other handle-shaped type in
+// this crate: `#[serde(transparent)]` so the wire form is the bare
+// string, no validation in the constructor (loaders are the right
+// place for that), `Display` for snapshots and error messages.
+// ─────────────────────────────────────────────────────────────────────
+
+/// Stable identifier for a [`KeybindingProfile`] — a kebab-case slug
+/// like `"default"` or `"vim"`.
+///
+/// Newtype over [`String`] (not [`uuid::Uuid`]) because profiles are a
+/// curated, named set: `"default"` should mean the same profile across
+/// machines, and a uuid would force every install to mint its own. The
+/// slug is what users reference in config files.
+///
+/// `#[serde(transparent)]` keeps the wire form a bare string so
+/// settings files read naturally:
+///
+/// ```toml
+/// keybinding_profile = "default"
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct KeybindingProfileId(String);
+
+impl KeybindingProfileId {
+    /// Wrap an existing slug. The Domain layer does *not* validate
+    /// the slug shape — that is the loader's job. Keeping the
+    /// constructor permissive means tests, snapshots, and in-memory
+    /// fixtures stay terse.
+    #[must_use]
+    pub fn new(slug: impl Into<String>) -> Self {
+        Self(slug.into())
+    }
+
+    /// Borrow the underlying slug.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for KeybindingProfileId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl From<&str> for KeybindingProfileId {
+    fn from(slug: &str) -> Self {
+        Self(slug.to_string())
+    }
+}
+
+impl From<String> for KeybindingProfileId {
+    fn from(slug: String) -> Self {
+        Self(slug)
+    }
+}
+
+assert_impl_all!(KeybindingProfileId: Send, Sync);
+
+// ─────────────────────────────────────────────────────────────────────
 // KeybindingProfile — named bag of bindings. Multiple bindings per
 // command so a profile can express a primary plus alternates.
 // HashMap rules out a Hash derive, but Eq is fine since both Vec and
@@ -685,10 +752,11 @@ fn function_key(n: u8) -> Option<Key> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct KeybindingProfile {
-    /// Stable profile id (`"default"`, `"vim"`, …). String rather than
-    /// uuid because profiles are referenced by their *name* across
-    /// installs and in shared config files.
-    pub id: String,
+    /// Stable profile id. Typed as [`KeybindingProfileId`] so the
+    /// settings layer (PRD-03) and any downstream profile registry
+    /// reference profiles by a single shared handle instead of a
+    /// free-form string.
+    pub id: KeybindingProfileId,
     /// Bindings in this profile, keyed by command id.
     pub bindings: HashMap<CommandId, Vec<KeyBinding>>,
 }
@@ -697,8 +765,12 @@ impl KeybindingProfile {
     /// Construct an empty profile with the given id. Callers populate
     /// [`KeybindingProfile::bindings`] afterwards or feed an existing
     /// map via the struct literal — the field is public.
+    ///
+    /// Accepts anything that converts into a [`KeybindingProfileId`]
+    /// so call sites can pass a `&str` literal, an owned `String`, or
+    /// a pre-built id without ceremony.
     #[must_use]
-    pub fn new(id: impl Into<String>) -> Self {
+    pub fn new(id: impl Into<KeybindingProfileId>) -> Self {
         Self {
             id: id.into(),
             bindings: HashMap::new(),
