@@ -56,6 +56,12 @@ futures = { workspace = true }
 # `http2`, `json`, `stream`). The sandboxed HTTP client builds on
 # those features; adapters never reach past it.
 reqwest = { workspace = true }
+# `regex` backs the `model_filter` knob on the openai-compatible
+# adapter. The filter is applied to every row returned from `/models`
+# so operators can whitelist by model-id pattern (anchored prefixes,
+# alternations, etc.) without inventing a bespoke DSL. Workspace pin
+# keeps later adapters that reuse the primitive on the same major.
+regex = { workspace = true }
 # `serde` + `serde_json` power the streaming `ToolCallAccumulator`
 # (its assembled output round-trips through serde and the parser
 # leans on `serde_json::from_str` for the final structural check)
