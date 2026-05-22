@@ -35,7 +35,18 @@
 //! - `permission` — `PermissionGrantStore` impl scoped per workspace.
 //! - `settings` — settings-TOML serializer/deserializer.
 //!
-//! None of those modules exist yet. They land as additive slices so a
-//! reviewer can read each one in isolation.
+//! Modules that have landed so far:
+//!
+//! - [`settings_store`] — PRD-03 Slice 3 (issue #65). In-process owner
+//!   of `settings.toml` with a temp-then-rename atomic write pipeline
+//!   on the tokio blocking pool. Hot reload lands in a follow-up
+//!   slice.
+//!
+//! Everything else above is still on the forecast — additive slices so
+//! a reviewer can read each one in isolation.
 
 #![forbid(unsafe_code)]
+
+pub mod settings_store;
+
+pub use settings_store::SettingsStore;
