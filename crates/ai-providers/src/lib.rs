@@ -66,6 +66,7 @@ pub mod anthropic;
 mod client;
 mod error;
 mod openai_compatible;
+mod registry;
 
 // `keyring_backend` is the small private trait that abstracts the OS
 // keychain so the public `KeyringSecretStore` can be exercised against
@@ -93,6 +94,7 @@ pub use anthropic::AnthropicProvider;
 pub use client::{SandboxedHttpClient, DEFAULT_APPROVAL_TIMEOUT};
 pub use error::HttpClientError;
 pub use openai_compatible::OpenAiCompatibleProvider;
+pub use registry::{ProviderConfig, ProviderHandle, ProviderId, ProviderRegistry};
 
 #[cfg(feature = "test-support")]
 pub use in_memory_secret_store::InMemorySecretStore;
