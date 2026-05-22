@@ -70,6 +70,19 @@ tracing = { workspace = true }
 # other crate in the workspace established.
 static_assertions = { workspace = true }
 
+# `rusqlite` carries the SQL backend the migration runner (and every
+# repository impl that lands in later PRD-03 slices) talks to. The
+# workspace pin uses the `bundled` feature so contributors compile
+# against a known-good SQLite version without needing a system
+# library at the right version.
+rusqlite = { workspace = true }
+
+# `thiserror` derives the local-only error mapping from `rusqlite`
+# failures into [`PersistenceError`] variants — the migration runner
+# carries no public error of its own; every fault funnels through
+# the Domain enum.
+thiserror = { workspace = true }
+
 [dev-dependencies]
 # `tempfile` provides isolated scratch directories for the
 # `SettingsStore` tests — each test owns its own tempdir that is

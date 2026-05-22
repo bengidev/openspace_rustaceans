@@ -111,6 +111,15 @@ toml = "0.8"
 # scratch directory (migration runner, FTS5 fixtures) stay on the
 # same major.
 tempfile = "3"
+# `rusqlite` is the SQL backend the persistence crate's repositories
+# (and the migration runner that lands in PRD-03 Slice 5) talk to.
+# `bundled` statically links libsqlite so contributors do not need a
+# system SQLite at the right version, and the build stays
+# reproducible across hosts. Workspace pin keeps the migration
+# runner, the FTS5-backed chat repository, and the schema fixtures
+# on the same major version so a single bump moves the whole
+# persistence layer in lockstep.
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 # Release profile tuned for distributable binaries: full optimisation,
 # thin LTO, single codegen unit, stripped symbols, abort on panic. The
