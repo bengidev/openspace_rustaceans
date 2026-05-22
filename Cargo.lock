@@ -794,6 +794,7 @@ dependencies = [
  "keyring",
  "openspace-shared",
  "proptest",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",

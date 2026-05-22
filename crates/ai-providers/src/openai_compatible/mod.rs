@@ -1,7 +1,7 @@
 //! Adapter for the industry-standard `/v1/chat/completions` wire
 //! format.
 //!
-//! The module is split into five files so each concern stays
+//! The module is split into six files so each concern stays
 //! readable on its own:
 //!
 //! - [`provider`] — the [`OpenAiCompatibleProvider`] struct, the
@@ -11,6 +11,11 @@
 //! - [`error_map`] — HTTP status → categorised
 //!   [`openspace_shared::ai::error::AiError`] mapping plus the
 //!   `Retry-After` parser.
+//! - [`request`] — Conversation → wire-format request mapping plus
+//!   the capability gate the chat-stream surface runs before bytes
+//!   leave the adapter.
+//! - [`catalogue`] — `/models` row → [`ModelInfo`] conversion plus
+//!   the dynamic / heuristic / fallback capability detection chain.
 //! - [`aggregator`] — preset surface for the hosted multi-model
 //!   aggregator that speaks the same wire format. Contributes
 //!   [`AttributionMode`] and the canonical header constants the
@@ -21,10 +26,13 @@
 //! private. See the crate-level docs for the wider public surface.
 //!
 //! [`AiProvider`]: openspace_shared::ai::provider::AiProvider
+//! [`ModelInfo`]: openspace_shared::ai::domain::ModelInfo
 
 mod aggregator;
+mod catalogue;
 mod error_map;
 mod provider;
+mod request;
 mod sse;
 mod wire;
 
