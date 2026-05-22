@@ -24,6 +24,7 @@
 //! - [`sandbox`]    — sandbox policy and decision types.
 //! - [`command`]    — command-palette types and handler trait.
 //! - [`keybinding`] — key-binding parser and profile types.
+//! - [`settings`]   — typed shape of `settings.toml`.
 //! - [`theme`]      — theme tokens (UI, syntax, terminal palette).
 //!
 //! Modules implemented in this slice: `error`, `id`, `workspace`. The
@@ -38,6 +39,7 @@ pub mod error;
 pub mod id;
 pub mod keybinding;
 pub mod sandbox;
+pub mod settings;
 pub mod theme;
 pub mod tool;
 pub mod workspace;
