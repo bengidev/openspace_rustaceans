@@ -120,6 +120,14 @@ tempfile = "3"
 # on the same major version so a single bump moves the whole
 # persistence layer in lockstep.
 rusqlite = { version = "0.32", features = ["bundled"] }
+# `notify` is the cross-platform filesystem watcher backing
+# `SettingsStore`'s hot-reload path (PRD-03 Slice 4). The crate wraps
+# the OS-native primitives (FSEvents on macOS, inotify on Linux,
+# ReadDirectoryChangesW on Windows) behind a single `RecommendedWatcher`
+# surface so the persistence layer stays portable. Pinned at the
+# workspace level so later slices that watch other on-disk artefacts
+# (workspace directories, attachment cache) reuse the same major.
+notify = "6"
 
 # Release profile tuned for distributable binaries: full optimisation,
 # thin LTO, single codegen unit, stripped symbols, abort on panic. The
