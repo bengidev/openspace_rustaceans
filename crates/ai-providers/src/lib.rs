@@ -92,7 +92,7 @@ pub use accumulator::{AccumulatorError, ToolCall, ToolCallAccumulator};
 pub use anthropic::AnthropicProvider;
 pub use client::{SandboxedHttpClient, DEFAULT_APPROVAL_TIMEOUT};
 pub use error::HttpClientError;
-pub use openai_compatible::OpenAiCompatibleProvider;
+pub use openai_compatible::{AttributionMode, OpenAiCompatibleProvider};
 
 #[cfg(feature = "test-support")]
 pub use in_memory_secret_store::InMemorySecretStore;
