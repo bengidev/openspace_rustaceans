@@ -831,6 +831,13 @@ name = "openspace-feature-welcome"
 version = "0.1.0"
 
 [[package]]
+name = "openspace-persistence"
+version = "0.1.0"
+dependencies = [
+ "openspace-shared",
+]
+
+[[package]]
 name = "openspace-shared"
 version = "0.1.0"
 dependencies = [
