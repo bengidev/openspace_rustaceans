@@ -95,11 +95,22 @@ bytes = "1"
 # pull it in.
 wiremock = "0.6"
 # `toml` rounds out the serde test matrix on persisted Domain types:
-# JSON locks the wire shape, TOML locks the settings-file shape. The
-# crate is dev-only (only `openspace-shared`'s tests pull it today),
-# but it still belongs in the workspace block so future settings-layer
-# code does not pick a drifting version.
+# JSON locks the wire shape, TOML locks the settings-file shape.
+# Originally dev-only, the crate is now also a runtime dep of
+# `openspace-persistence` (the `SettingsStore` reads and serialises
+# `settings.toml` through it); pinning at the workspace level keeps
+# the read-side fixtures in `openspace-shared` and the write-side
+# pipeline in `openspace-persistence` on the same major version so a
+# fixture round-trip in tests stays representative of what the store
+# emits at runtime.
 toml = "0.8"
+# `tempfile` is dev-only — it backs the persistence crate's
+# `SettingsStore` tests so each scenario writes into an isolated
+# directory that is cleaned up regardless of test outcome. Pinned at
+# the workspace level so later persistence slices that need a
+# scratch directory (migration runner, FTS5 fixtures) stay on the
+# same major.
+tempfile = "3"
 
 # Release profile tuned for distributable binaries: full optimisation,
 # thin LTO, single codegen unit, stripped symbols, abort on panic. The
