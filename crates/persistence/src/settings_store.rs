@@ -52,15 +52,21 @@
 //! inherits that posture by construction — it never reads or writes
 //! anything but a `Settings` value.
 
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::mpsc as std_mpsc;
+use std::sync::{Arc, Mutex as StdMutex, RwLock};
+use std::time::{Duration, Instant};
 
+use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use openspace_shared::persistence::PersistenceError;
 use openspace_shared::settings::Settings;
 use static_assertions::assert_impl_all;
+use tokio::sync::broadcast;
 use tokio::sync::Mutex as AsyncMutex;
+use tracing::warn;
 
 /// Default file extension marking the sibling temp file the atomic
 /// write goes through. The actual filename is
@@ -70,6 +76,25 @@ use tokio::sync::Mutex as AsyncMutex;
 /// race, never the temp write).
 const TEMP_PREFIX: &str = ".";
 const TEMP_INFIX: &str = ".tmp.";
+
+// ─────────────────────────────────────────────────────────────────────
+// SettingsChanged — the hot-reload event broadcast to subscribers.
+// ─────────────────────────────────────────────────────────────────────
+
+/// Event emitted on every successful hot reload.
+///
+/// Carries the post-reload [`Settings`] snapshot so subscribers can
+/// react without re-reading the store. The receiver path is
+/// `SettingsStore::subscribe() -> broadcast::Receiver<Self>`; lagging
+/// receivers see [`tokio::sync::broadcast::error::RecvError::Lagged`]
+/// and should re-query [`SettingsStore::current`] when they catch up.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SettingsChanged {
+    /// Post-reload snapshot. Cloning this is cheap relative to a UI
+    /// reflow, so subscribers are free to keep the value or discard
+    /// it and re-read the store on the next render.
+    pub settings: Settings,
+}
 
 // ─────────────────────────────────────────────────────────────────────
 // FileWriter — pluggable IO so the unit tests can inject a partial-
@@ -183,6 +208,142 @@ fn unique_suffix() -> String {
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// WatcherHandle — owns the `notify` watcher and the debounce-and-
+// reload driver thread. Dropping the handle stops the OS-level
+// watcher (because `RecommendedWatcher` is dropped) and signals the
+// driver thread to exit, so the store cleans up deterministically.
+// ─────────────────────────────────────────────────────────────────────
+
+/// Default debounce window for coalescing watcher events. Editors
+/// often emit two or three events for a single save (write +
+/// metadata, or rename-into-place); reading on every event would
+/// re-parse the file three times. Coalescing inside this window
+/// collapses the storm into a single reload while staying well under
+/// the AC's 500 ms ceiling.
+const DEFAULT_DEBOUNCE: Duration = Duration::from_millis(75);
+
+/// Internal handle that owns the `notify` watcher object plus the
+/// driver thread polling its event channel. Dropping this handle
+/// drops the watcher (releasing the OS resources) and lets the
+/// driver thread observe the disconnected channel on its next
+/// receive, exiting cleanly.
+struct WatcherHandle {
+    /// The OS-backed watcher. Held in an [`Option`] so [`Drop`] can
+    /// drop it *before* joining the driver thread; the order matters
+    /// because the driver only exits once its receive channel
+    /// disconnects, and the channel disconnects when the watcher
+    /// senders are dropped.
+    watcher: Option<RecommendedWatcher>,
+    /// Join handle on the driver thread. Held in an [`Option`] for
+    /// the same reason — taken out and joined inside [`Drop`].
+    driver: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for WatcherHandle {
+    fn drop(&mut self) {
+        // Drop the watcher first so the channel disconnects.
+        drop(self.watcher.take());
+        // Then join the driver. We use `join` (blocking) rather than
+        // a detach because the test for "watcher is dropped cleanly
+        // when SettingsStore is dropped" needs to observe that the
+        // thread really did exit, and a detach would let it linger.
+        if let Some(handle) = self.driver.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+/// Decide whether a `notify` event is potentially relevant to the
+/// settings file. We watch the *parent directory* (so editors that
+/// rename a temp file over the target still surface an event), which
+/// means events for unrelated siblings reach the driver too — those
+/// are filtered out here. Returning `true` only forces a debounce
+/// check, never an actual reload, so a permissive filter is safe.
+fn event_matches_target(event: &Event, target_name: &OsStr) -> bool {
+    // Only act on writes / creates / renames-into-place. Pure access
+    // events (atime updates) and "other" notifications are ignored
+    // because they cannot change file content.
+    let kind_relevant = matches!(
+        event.kind,
+        EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_)
+    );
+    if !kind_relevant {
+        return false;
+    }
+
+    // `notify` reports event paths against whatever was watched. When
+    // we watch the parent directory we get sibling paths too; only
+    // the ones whose final component matches the target are
+    // candidates for reload.
+    event
+        .paths
+        .iter()
+        .any(|p| p.file_name() == Some(target_name))
+}
+
+/// Re-read the settings file from disk and either publish a new
+/// snapshot (on success) or warn-and-skip (on failure). Used both by
+/// the watcher driver and by the "manual nudge" code path tests use
+/// to force a reload deterministically without racing the OS.
+fn perform_reload(
+    path: &Path,
+    snapshot: &Arc<RwLock<Settings>>,
+    reload_tx: &broadcast::Sender<SettingsChanged>,
+) {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(err) => {
+            // A transient read error (file briefly absent during a
+            // rename, EACCES while another process holds the lock)
+            // is logged and skipped. The next event will retry.
+            warn!(
+                error = %err,
+                path = %path.display(),
+                "settings hot-reload: read failed; keeping previous snapshot",
+            );
+            return;
+        }
+    };
+
+    let parsed: Settings = match toml::from_str(&text) {
+        Ok(value) => value,
+        Err(err) => {
+            // AC: malformed TOML must not swap the snapshot, must not
+            // emit an event, must keep the previous good value.
+            warn!(
+                error = %err,
+                path = %path.display(),
+                "settings hot-reload: parse failed; keeping previous snapshot",
+            );
+            return;
+        }
+    };
+
+    // Avoid emitting an event when the on-disk content round-trips to
+    // the same `Settings` value (e.g. a no-op editor save). Subscribers
+    // can still observe the new snapshot via `current()`.
+    {
+        let guard = snapshot
+            .read()
+            .expect("SettingsStore snapshot RwLock poisoned");
+        if *guard == parsed {
+            return;
+        }
+    }
+
+    // Publish in-memory first so a subscriber that wakes on the
+    // broadcast event sees a consistent `current()` immediately.
+    *snapshot
+        .write()
+        .expect("SettingsStore snapshot RwLock poisoned") = parsed.clone();
+
+    // `send` only fails when there are no receivers. That is a normal
+    // state — a store with no subscribers still hot-reloads its own
+    // snapshot — so the result is intentionally discarded.
+    let _ = reload_tx.send(SettingsChanged { settings: parsed });
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // SettingsStore — the public surface PRD-03 Slice 3 ships.
 // ─────────────────────────────────────────────────────────────────────
 
@@ -214,6 +375,17 @@ pub struct SettingsStore {
     /// [`StdFileWriter`]; tests substitute a stub via
     /// `Self::load_with_writer` to inject a partial-write scenario.
     writer: Arc<dyn FileWriter>,
+    /// Sender half of the hot-reload broadcast channel. The watcher
+    /// loop publishes a [`SettingsChanged`] event here on every
+    /// successful reload; subscribers reach the receiver half via
+    /// [`Self::subscribe`].
+    reload_tx: broadcast::Sender<SettingsChanged>,
+    /// Owns the `notify` watcher and its driver thread. Wrapped in an
+    /// [`Option`] so [`Drop`] can take it out and tear it down
+    /// deterministically — when the inner [`WatcherHandle`] is
+    /// dropped, both the OS watcher and the driver thread shut down,
+    /// so no file handles or threads leak past the store.
+    watcher: StdMutex<Option<WatcherHandle>>,
 }
 
 assert_impl_all!(SettingsStore: Send, Sync);
@@ -247,6 +419,24 @@ impl SettingsStore {
     /// File IO runs on the tokio blocking pool so the runtime thread
     /// the caller is on stays free to drive UI work concurrently.
     pub async fn load(path: impl Into<PathBuf>) -> Result<Self, PersistenceError> {
+        Self::load_with_options(path, true).await
+    }
+
+    /// Internal constructor that lets tests opt out of spawning the
+    /// filesystem watcher. The "no watcher" mode keeps the rest of
+    /// the surface (snapshot, edit, subscribe) intact so tests that
+    /// only care about the broadcast wiring can drive reloads via
+    /// `reload_now` without racing real file events.
+    //
+    // Note: `reload_now` is `#[cfg(test)]`, so an intra-doc link to
+    // it would fail under `cargo doc` without `--cfg test` (CI's
+    // doc job runs without the test cfg). Bare backtick keeps the
+    // reference visible in the source while staying portable across
+    // the doc-build matrix.
+    async fn load_with_options(
+        path: impl Into<PathBuf>,
+        spawn_watcher: bool,
+    ) -> Result<Self, PersistenceError> {
         let path = path.into();
         let read_path = path.clone();
         let bytes = tokio::task::spawn_blocking(move || match fs::read_to_string(&read_path) {
@@ -269,11 +459,33 @@ impl SettingsStore {
                 .map_err(|err| PersistenceError::SerializationError(err.to_string()))?,
         };
 
+        // Capacity of 16 strikes a balance: a UI subscriber that
+        // briefly stalls (window minimised, runtime starvation) does
+        // not lag immediately, but a runaway producer cannot grow
+        // memory without bound. Lagging receivers see `RecvError::Lagged`
+        // and should re-query `current()` on catch-up.
+        let (reload_tx, _) = broadcast::channel::<SettingsChanged>(16);
+
+        let snapshot = Arc::new(RwLock::new(settings));
+
+        let watcher = if spawn_watcher {
+            Some(spawn_watcher_thread(
+                path.clone(),
+                Arc::clone(&snapshot),
+                reload_tx.clone(),
+                DEFAULT_DEBOUNCE,
+            )?)
+        } else {
+            None
+        };
+
         Ok(Self {
             path,
-            snapshot: Arc::new(RwLock::new(settings)),
+            snapshot,
             write_lock: AsyncMutex::new(()),
             writer: Arc::new(StdFileWriter),
+            reload_tx,
+            watcher: StdMutex::new(watcher),
         })
     }
 
@@ -281,6 +493,31 @@ impl SettingsStore {
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Subscribe to hot-reload events.
+    ///
+    /// Returns a [`broadcast::Receiver`] that yields a
+    /// [`SettingsChanged`] every time the on-disk file is replaced
+    /// with a different `Settings` value (any external write that
+    /// successfully parses and is not byte-equivalent to the prior
+    /// snapshot triggers an event).
+    ///
+    /// Each call returns a fresh receiver — clone the store via
+    /// `Arc<SettingsStore>` and call `subscribe()` once per consumer.
+    /// A subscriber that drops its receiver simply stops receiving
+    /// events; the watcher and the rest of the subscriber set are
+    /// unaffected.
+    ///
+    /// Lagging receivers (slow consumer that falls behind the
+    /// channel capacity) see
+    /// [`tokio::sync::broadcast::error::RecvError::Lagged`] on the
+    /// next `recv()` and should re-query [`Self::current`] when they
+    /// catch up — the broadcast event is *advisory*, the snapshot is
+    /// the source of truth.
+    #[must_use]
+    pub fn subscribe(&self) -> broadcast::Receiver<SettingsChanged> {
+        self.reload_tx.subscribe()
     }
 
     /// Cheap clone of the current snapshot. Cloning a [`Settings`] is
@@ -357,6 +594,176 @@ impl SettingsStore {
         let mut store = Self::load(path).await?;
         store.writer = writer;
         Ok(store)
+    }
+
+    /// Test seam: build a store with no filesystem watcher attached.
+    /// Tests that exercise the broadcast channel deterministically
+    /// (without racing FSEvents / inotify) use this together with
+    /// [`Self::reload_now`] to drive the reload pipeline by hand.
+    #[cfg(test)]
+    pub(crate) async fn load_without_watcher(
+        path: impl Into<PathBuf>,
+    ) -> Result<Self, PersistenceError> {
+        Self::load_with_options(path, false).await
+    }
+
+    /// Test seam: trigger one reload synchronously. Equivalent to a
+    /// watcher event arriving for the target path; the AC for parse
+    /// failure / event suppression is verified through this entry
+    /// point so the assertions stay independent of OS event timing.
+    #[cfg(test)]
+    pub(crate) fn reload_now(&self) {
+        perform_reload(&self.path, &self.snapshot, &self.reload_tx);
+    }
+}
+
+impl Drop for SettingsStore {
+    fn drop(&mut self) {
+        // Take the watcher out of its mutex so its `Drop` runs while
+        // the store is still alive enough to log on the way down.
+        // The `WatcherHandle::drop` impl below is what actually
+        // releases the OS watcher and joins the driver thread.
+        if let Ok(mut guard) = self.watcher.lock() {
+            drop(guard.take());
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// spawn_watcher_thread — builds a `notify` watcher on the parent
+// directory of the settings file, plus a driver thread that
+// debounces incoming events and dispatches reloads. Returns a
+// `WatcherHandle` so the store can tear both down on Drop.
+// ─────────────────────────────────────────────────────────────────────
+
+fn spawn_watcher_thread(
+    path: PathBuf,
+    snapshot: Arc<RwLock<Settings>>,
+    reload_tx: broadcast::Sender<SettingsChanged>,
+    debounce: Duration,
+) -> Result<WatcherHandle, PersistenceError> {
+    // Resolve the directory we actually watch. We watch the parent
+    // (rather than the file directly) because the atomic-write
+    // pipeline replaces the file via rename — a watcher pinned to
+    // the file inode would lose its subscription on the very first
+    // edit. Watching the parent directory plus filtering by
+    // `file_name()` keeps the subscription alive across rename
+    // cycles.
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    // Make sure the directory exists before we ask `notify` to watch
+    // it — on a brand-new install the user's config dir might not be
+    // there yet. `create_dir_all` is idempotent and only writes if
+    // missing, which keeps the "load() does not create the file"
+    // invariant in `Settings::load` intact (we create the *dir*, not
+    // the file).
+    if let Err(err) = fs::create_dir_all(&parent) {
+        return Err(PersistenceError::IoError(format!(
+            "settings watcher: cannot create parent {}: {err}",
+            parent.display()
+        )));
+    }
+
+    let target_name: OsString = path.file_name().map(OsStr::to_os_string).ok_or_else(|| {
+        PersistenceError::IoError(format!(
+            "settings watcher: target has no file name: {}",
+            path.display()
+        ))
+    })?;
+
+    // `notify` delivers events through a `Send` callback. We bridge
+    // that into a std `mpsc` channel so the driver thread can pull
+    // events at its own pace and apply the debounce window.
+    let (tx, rx) = std_mpsc::channel::<notify::Result<Event>>();
+    let mut watcher = notify::recommended_watcher(move |res| {
+        // The receiver may have hung up if the driver thread
+        // exited first; that is fine — drop the event.
+        let _ = tx.send(res);
+    })
+    .map_err(|err| PersistenceError::IoError(format!("settings watcher: build failed: {err}")))?;
+
+    watcher
+        .watch(&parent, RecursiveMode::NonRecursive)
+        .map_err(|err| {
+            PersistenceError::IoError(format!(
+                "settings watcher: cannot watch {}: {err}",
+                parent.display()
+            ))
+        })?;
+
+    // Driver thread: receive events, apply debounce, dispatch reloads.
+    // The thread exits when the watcher is dropped (sender side
+    // disconnects, `recv` returns `Err`).
+    let driver_path = path.clone();
+    let driver = std::thread::Builder::new()
+        .name("openspace-settings-watcher".to_string())
+        .spawn(move || {
+            watcher_driver_loop(driver_path, target_name, snapshot, reload_tx, rx, debounce);
+        })
+        .map_err(|err| {
+            PersistenceError::IoError(format!("settings watcher: spawn failed: {err}"))
+        })?;
+
+    Ok(WatcherHandle {
+        watcher: Some(watcher),
+        driver: Some(driver),
+    })
+}
+
+/// Driver-thread body. Reads events off the `notify` channel,
+/// coalesces them inside the debounce window, and dispatches one
+/// `perform_reload` call per coalesced burst. Exits cleanly when
+/// the channel disconnects (i.e. the watcher was dropped by the
+/// owning `SettingsStore`).
+fn watcher_driver_loop(
+    path: PathBuf,
+    target_name: OsString,
+    snapshot: Arc<RwLock<Settings>>,
+    reload_tx: broadcast::Sender<SettingsChanged>,
+    rx: std_mpsc::Receiver<notify::Result<Event>>,
+    debounce: Duration,
+) {
+    loop {
+        // Block for the next event. Channel disconnect = watcher
+        // gone = thread exits.
+        let first = match rx.recv() {
+            Ok(ev) => ev,
+            Err(_) => return,
+        };
+
+        let mut have_relevant = match first {
+            Ok(ev) => event_matches_target(&ev, &target_name),
+            Err(err) => {
+                warn!(error = %err, "settings watcher: event error");
+                false
+            }
+        };
+
+        // Debounce window: keep draining events until either the
+        // window elapses with no new event or the channel closes.
+        let deadline = Instant::now() + debounce;
+        while let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
+            match rx.recv_timeout(remaining) {
+                Ok(Ok(ev)) => {
+                    if event_matches_target(&ev, &target_name) {
+                        have_relevant = true;
+                    }
+                }
+                Ok(Err(err)) => {
+                    warn!(error = %err, "settings watcher: event error");
+                }
+                Err(std_mpsc::RecvTimeoutError::Timeout) => break,
+                Err(std_mpsc::RecvTimeoutError::Disconnected) => return,
+            }
+        }
+
+        if have_relevant {
+            perform_reload(&path, &snapshot, &reload_tx);
+        }
     }
 }
 
@@ -555,5 +962,165 @@ mod tests {
         h2.await.expect("write task").expect("edit");
 
         assert!(store.current().update_check_enabled);
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // Hot-reload acceptance scenarios (issue #66 / PRD-03 Slice 4).
+    //
+    // The watcher path is exercised end-to-end against a real
+    // filesystem watcher in `hot_reload_external_write_publishes_*`,
+    // and the parse-failure / event-suppression invariants are
+    // verified via the `reload_now` test seam so the assertions stay
+    // independent of OS event timing.
+    // ─────────────────────────────────────────────────────────────────
+
+    /// AC #2 — external write triggers a `SettingsChanged` event on a
+    /// subscribed receiver within the documented 500 ms ceiling, and
+    /// the in-process snapshot reflects the post-edit value.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hot_reload_external_write_publishes_event_within_500ms() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("settings.toml");
+
+        // Seed the file so the store loads against a known shape and
+        // the external write below produces a *different* value
+        // (i.e. the no-op suppression path does not swallow the
+        // event).
+        let pre = Settings::default();
+        fs::write(&path, toml::to_string(&pre).expect("serialize pre")).expect("seed pre");
+
+        let store = SettingsStore::load(&path).await.expect("load with watcher");
+        assert_eq!(store.current(), pre);
+
+        let mut rx = store.subscribe();
+
+        // External edit. We use `tokio::fs::write` because the AC
+        // mentions it explicitly, but any write that lands the new
+        // bytes on disk is a valid trigger.
+        let mut post = Settings::default();
+        post.default_provider = "external-edit-provider".to_string();
+        post.theme_mode = ThemeMode::Dark;
+        let post_text = toml::to_string(&post).expect("serialize post");
+        fs::write(&path, &post_text).expect("external write");
+
+        // Wait at most 500 ms for the broadcast event.
+        let event = tokio::time::timeout(Duration::from_millis(500), rx.recv())
+            .await
+            .expect("hot reload must arrive within 500 ms")
+            .expect("broadcast receiver must yield an event");
+
+        assert_eq!(event.settings, post);
+        assert_eq!(store.current(), post);
+    }
+
+    /// AC #3 — malformed TOML on disk does *not* swap the snapshot
+    /// and does *not* emit an event; subscribers continue to see the
+    /// last-good value via `current()`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hot_reload_malformed_toml_keeps_prior_snapshot_silently() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("settings.toml");
+
+        let mut pre = Settings::default();
+        pre.default_provider = "pre-reload".to_string();
+        fs::write(&path, toml::to_string(&pre).expect("serialize")).expect("seed");
+
+        // Use the no-watcher seam so the test does not race the OS
+        // watcher; the parse-failure path is the same for both
+        // entry points (`watcher_driver_loop` calls
+        // `perform_reload`, and `reload_now` calls it directly).
+        let store = SettingsStore::load_without_watcher(&path)
+            .await
+            .expect("load without watcher");
+        assert_eq!(store.current(), pre);
+        let mut rx = store.subscribe();
+
+        // Stomp the file with garbage.
+        fs::write(&path, "this is = not [valid toml").expect("write garbage");
+        store.reload_now();
+
+        // Snapshot stayed at `pre`.
+        assert_eq!(store.current(), pre);
+
+        // Subscriber received nothing. We poll for a short window
+        // and confirm the receiver is still empty.
+        let outcome = tokio::time::timeout(Duration::from_millis(100), rx.recv()).await;
+        assert!(
+            outcome.is_err(),
+            "no event should fire on malformed toml, got {outcome:?}",
+        );
+    }
+
+    /// AC — round-trip equivalent edits do not emit redundant events.
+    /// A subscriber should only wake when the snapshot value actually
+    /// changed.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hot_reload_same_value_does_not_emit_event() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("settings.toml");
+
+        let value = Settings::default();
+        fs::write(&path, toml::to_string(&value).expect("serialize")).expect("seed");
+
+        let store = SettingsStore::load_without_watcher(&path)
+            .await
+            .expect("load without watcher");
+        let mut rx = store.subscribe();
+
+        // Re-write byte-equivalent content (same `Settings` shape).
+        fs::write(&path, toml::to_string(&value).expect("serialize")).expect("rewrite");
+        store.reload_now();
+
+        let outcome = tokio::time::timeout(Duration::from_millis(75), rx.recv()).await;
+        assert!(
+            outcome.is_err(),
+            "no event should fire on identical content, got {outcome:?}",
+        );
+        assert_eq!(store.current(), value);
+    }
+
+    /// AC #4 — dropping the store releases the watcher cleanly. We
+    /// observe this indirectly: the driver thread is joined inside
+    /// `WatcherHandle::drop`, so a pass means the join completed
+    /// (otherwise the test would hang). We also confirm a subsequent
+    /// store can re-watch the same path without an "already in use"
+    /// error.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hot_reload_watcher_drops_cleanly() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("settings.toml");
+
+        {
+            let store = SettingsStore::load(&path).await.expect("load 1");
+            assert_eq!(store.current(), Settings::default());
+            // Drop the store at the end of this scope — the driver
+            // thread is joined inside `WatcherHandle::drop`.
+        }
+
+        // A fresh store on the same path must succeed; the previous
+        // watcher fully released its OS handle.
+        let store2 = SettingsStore::load(&path).await.expect("load 2");
+        assert_eq!(store2.current(), Settings::default());
+    }
+
+    /// Watcher-handle drop must complete promptly. The
+    /// `WatcherHandle::drop` impl joins the driver thread
+    /// synchronously, so a healthy drop must take well under the
+    /// timeout — a hang here would mean the join blocked forever.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hot_reload_store_drop_is_prompt() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("settings.toml");
+
+        let store = SettingsStore::load(&path).await.expect("load");
+
+        let started = Instant::now();
+        drop(store);
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "store drop should be near-instant; took {elapsed:?}",
+        );
     }
 }

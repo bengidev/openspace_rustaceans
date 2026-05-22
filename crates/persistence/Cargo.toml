@@ -21,6 +21,8 @@ description = "On-disk persistence for OpenSpace — SQLite-backed repositories 
 # Slice 3 (issue #65) then introduced `SettingsStore` — the in-process
 # owner of `settings.toml` — and pulled in the deps needed to read,
 # atomically write, and roundtrip the TOML shape on the blocking pool.
+# Slice 4 (issue #66) layered hot reload on top of the same store via
+# a `notify` watcher and a tokio `broadcast` channel.
 #
 # Hard rules (mirrors the conventions `openspace-ai-providers`
 # established):
@@ -45,9 +47,13 @@ openspace-shared = { path = "../shared" }
 # `tokio` carries the blocking pool the `SettingsStore` dispatches
 # file IO onto (`spawn_blocking`) so the UI thread never blocks on
 # disk operations — US#9 in PRD-03. We pull `rt` for the runtime
-# handle, `sync` for `Mutex` (the write serialiser), and `macros` so
-# the unit tests in this crate can use `#[tokio::test]`.
-tokio = { workspace = true, features = ["rt", "sync", "macros"] }
+# handle, `sync` for `Mutex` and `broadcast` (the write serialiser
+# plus the hot-reload event channel that publishes `SettingsChanged`
+# to subscribers), and `macros` so the unit tests in this crate can
+# use `#[tokio::test]`. `time` is pulled in so the watcher's debounce
+# loop can sleep between coalesced events without hand-rolling a
+# timer thread.
+tokio = { workspace = true, features = ["rt", "sync", "macros", "time"] }
 
 # `toml` is the wire-format encoder/decoder for `settings.toml`.
 # Workspace pin keeps it in lockstep with the read-side fixtures in
@@ -82,6 +88,14 @@ rusqlite = { workspace = true }
 # carries no public error of its own; every fault funnels through
 # the Domain enum.
 thiserror = { workspace = true }
+
+# `notify` is the cross-platform filesystem watcher used by
+# `SettingsStore`'s hot-reload path. The store spawns a
+# `RecommendedWatcher` on the parent directory of the settings file
+# at construction; on each write event the file is re-parsed and the
+# in-memory snapshot is swapped under the existing `RwLock`. Pinned
+# via the workspace.
+notify = { workspace = true }
 
 [dev-dependencies]
 # `tempfile` provides isolated scratch directories for the
