@@ -110,6 +110,34 @@ define_id!(
     PaneId
 );
 
+define_id!(
+    /// Identifies a session — one bounded interaction inside a
+    /// workspace, scoped to a single mode (terminal, chat, editor).
+    /// Distinct from [`ChatId`]: a chat session contains exactly one
+    /// chat, but a session as a record carries the mode-agnostic
+    /// metadata (created_at, title, …) that the recents list and the
+    /// workspace switcher consume.
+    SessionId
+);
+
+define_id!(
+    /// Identifies an attachment — a content-addressed blob the agent
+    /// loop or a tool surfaced into a chat (uploaded file, generated
+    /// image, captured terminal output, …). Distinct from the
+    /// `content_hash` because two attachments backed by the same
+    /// bytes (the same file pasted twice) keep distinct provenance.
+    AttachmentId
+);
+
+define_id!(
+    /// Identifies a permission grant — one consent-surface decision
+    /// the user attached to a tool call, scoped per workspace, per
+    /// session, or globally. Distinct from the tool identifier
+    /// because revocation needs to address the grant itself, not the
+    /// tool it covers.
+    PermissionGrantId
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -139,6 +167,9 @@ mod tests {
         assert_id_contract!(BufferId);
         assert_id_contract!(TerminalPaneId);
         assert_id_contract!(PaneId);
+        assert_id_contract!(SessionId);
+        assert_id_contract!(AttachmentId);
+        assert_id_contract!(PermissionGrantId);
     }
 
     /// Two fresh v4 ids should never collide. The probability of a
@@ -174,6 +205,9 @@ mod tests {
         round_trip(BufferId::new_v4());
         round_trip(TerminalPaneId::new_v4());
         round_trip(PaneId::new_v4());
+        round_trip(SessionId::new_v4());
+        round_trip(AttachmentId::new_v4());
+        round_trip(PermissionGrantId::new_v4());
     }
 
     /// `#[serde(transparent)]` should produce a bare quoted-uuid

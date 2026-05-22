@@ -1,0 +1,42 @@
+[package]
+name = "openspace-persistence"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "On-disk persistence for OpenSpace — SQLite-backed repositories and the settings TOML pipeline."
+
+# Foundation slice — this crate currently carries no implementation
+# code. PRD-03 lands the SQLite/FTS5-backed repositories, the
+# settings-TOML pipeline, and the migration runner across follow-up
+# slices; this manifest exists today so:
+#
+#   - the workspace member shape is in place before downstream slices
+#     start adding `[dependencies]`;
+#   - `openspace-shared::persistence`'s trait surface has a concrete
+#     home for its impls without retroactively wiring a new crate;
+#   - the build / test / clippy / rustdoc gates run green from the
+#     first slice rather than breaking on the second.
+#
+# Hard rules (mirrors the conventions `openspace-ai-providers`
+# established):
+#
+#   - Domain types (the repository trait surface, `PersistenceError`,
+#     supporting handle types) live in `openspace-shared`. This crate
+#     consumes them; nothing here leaks back into the Domain layer.
+#   - Storage backends, SQL, file IO, and migration plumbing are
+#     in scope for *this* crate, never for `openspace-shared`. The
+#     Domain crate must stay testable without a database file.
+#   - No third-party product names enter identifiers, doc comments,
+#     or error strings — the abstract aliases ("on-disk store",
+#     "SQL backend", "settings file") carry the meaning instead.
+[dependencies]
+# Pulled in so the impl crate can reach the trait surface, the error
+# enum, and the supporting handle types it implements. No other
+# dependencies today — downstream slices add the SQL driver, the TOML
+# parser, and the migration helpers when their PRD-03 issues land.
+openspace-shared = { path = "../shared" }
+
+[lints]
+workspace = true
