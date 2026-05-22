@@ -41,12 +41,19 @@
 //!   of `settings.toml` with a temp-then-rename atomic write pipeline
 //!   on the tokio blocking pool. Hot reload lands in a follow-up
 //!   slice.
+//! - [`migration`] — PRD-03 Slice 5 (issue #67). [`MigrationRunner`]
+//!   owns the schema-version state machine over a numbered SQL
+//!   migrations directory. The runner is the deep module every
+//!   later repository slice opens its connection through; the SQL
+//!   schema itself lands in follow-up slices, not here.
 //!
 //! Everything else above is still on the forecast — additive slices so
 //! a reviewer can read each one in isolation.
 
 #![forbid(unsafe_code)]
 
+pub mod migration;
 pub mod settings_store;
 
+pub use migration::MigrationRunner;
 pub use settings_store::SettingsStore;
