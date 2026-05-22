@@ -1,7 +1,7 @@
 //! AI-specific error enum — [`AiError`].
 //!
-//! Lives next to the provider trait rather than in the crate-level
-//! [`crate::error`] module because only the AI slice surfaces it.
+//! Lives next to the provider trait rather than in a crate-level
+//! error module because only the AI slice surfaces it.
 //! Every variant describes a *category* of failure the agent loop and
 //! the UI need to distinguish — auth failures rerun the login flow,
 //! rate-limit failures back off, network failures retry, and so on.
