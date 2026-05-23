@@ -998,6 +998,8 @@ version = "0.1.0"
 name = "openspace-persistence"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "chrono",
  "notify",
  "openspace-shared",
  "rusqlite",
@@ -1009,6 +1011,7 @@ dependencies = [
  "tokio-rusqlite",
  "toml",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
