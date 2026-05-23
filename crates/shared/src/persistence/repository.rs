@@ -258,6 +258,16 @@ pub trait TurnRepository: Send + Sync {
     /// Returns [`PersistenceError`] when the underlying store
     /// cannot be enumerated.
     async fn list_for_chat(&self, chat_id: ChatId) -> Result<Vec<Turn>, PersistenceError>;
+
+    /// Full-text search across indexed turn payload text.
+    ///
+    /// Returns `(turn_id, chat_id)` pairs ordered by the backend's FTS
+    /// rank, capped by `limit`.
+    async fn search(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<(TurnId, ChatId)>, PersistenceError>;
 }
 
 assert_impl_all!(dyn TurnRepository: Send, Sync);

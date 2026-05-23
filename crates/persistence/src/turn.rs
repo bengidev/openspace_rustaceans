@@ -103,6 +103,32 @@ impl TurnRepository for SqliteTurnRepository {
             .await
             .map_err(map_sql_error)
     }
+
+    async fn search(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<(TurnId, ChatId)>, PersistenceError> {
+        let query = query.to_string();
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        self.db
+            .connection()
+            .call(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT turn_id, chat_id
+                     FROM turn_text_fts
+                     WHERE turn_text_fts MATCH ?1
+                     ORDER BY rank
+                     LIMIT ?2",
+                )?;
+                let rows = stmt
+                    .query_map(params![query, limit], search_hit_from_row)?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(rows)
+            })
+            .await
+            .map_err(map_sql_error)
+    }
 }
 
 struct TurnRow {
@@ -143,4 +169,17 @@ fn turn_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Turn> {
     let created_at: i64 = row.get(3)?;
     turn.created_at = ts_to_datetime(created_at)?;
     Ok(turn)
+}
+
+fn search_hit_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<(TurnId, ChatId)> {
+    let turn_id: String = row.get(0)?;
+    let chat_id: String = row.get(1)?;
+    Ok((
+        TurnId::from_uuid(Uuid::parse_str(&turn_id).map_err(|err| {
+            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(err))
+        })?),
+        ChatId::from_uuid(Uuid::parse_str(&chat_id).map_err(|err| {
+            rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, Box::new(err))
+        })?),
+    ))
 }
