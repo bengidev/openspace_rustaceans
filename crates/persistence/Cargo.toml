@@ -83,6 +83,13 @@ static_assertions = { workspace = true }
 # library at the right version.
 rusqlite = { workspace = true }
 
+# `tokio_rusqlite` wraps the `rusqlite` connection in a tokio-friendly
+# handle that dispatches every SQL call onto the blocking pool. PRD-03
+# Slice 6 introduces the [`Database`] handle that owns one of these
+# per process; later repository slices borrow it through a clone-cheap
+# `Arc` wrapper so the UI thread never blocks on disk IO (US#9).
+tokio-rusqlite = { workspace = true }
+
 # `thiserror` derives the local-only error mapping from `rusqlite`
 # failures into [`PersistenceError`] variants — the migration runner
 # carries no public error of its own; every fault funnels through

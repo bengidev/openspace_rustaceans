@@ -46,14 +46,22 @@
 //!   migrations directory. The runner is the deep module every
 //!   later repository slice opens its connection through; the SQL
 //!   schema itself lands in follow-up slices, not here.
+//! - [`db`] — PRD-03 Slice 6 (issue #68). [`Database`] is the async
+//!   SQL handle every later repository slice borrows: opens the file
+//!   with the WAL pragma set, runs every migration in
+//!   `migrations/` (starting with `0001_initial.sql`, also added by
+//!   this slice), and hands back a clone-cheap handle keyed off
+//!   `tokio_rusqlite::Connection`.
 //!
 //! Everything else above is still on the forecast — additive slices so
 //! a reviewer can read each one in isolation.
 
 #![forbid(unsafe_code)]
 
+pub mod db;
 pub mod migration;
 pub mod settings_store;
 
+pub use db::Database;
 pub use migration::MigrationRunner;
 pub use settings_store::SettingsStore;
