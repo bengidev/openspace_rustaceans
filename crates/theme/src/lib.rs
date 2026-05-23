@@ -373,7 +373,11 @@ mod tests {
     }
     #[test]
     fn missing_required_token_is_typed() {
-        let src = VALID.replace("background = \"#1E1E2E\"\n", "");
+        let src = VALID
+            .lines()
+            .filter(|line| *line != "background = \"#1E1E2E\"")
+            .collect::<Vec<_>>()
+            .join("\n");
         assert_eq!(
             ThemeFile::parse(&src),
             Err(ThemeError::MissingToken {
