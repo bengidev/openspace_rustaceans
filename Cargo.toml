@@ -135,6 +135,12 @@ tokio-rusqlite = { version = "0.6", features = ["bundled"] }
 # workspace level so later slices that watch other on-disk artefacts
 # (workspace directories, attachment cache) reuse the same major.
 notify = "6"
+# `directories` resolves platform-conventional application data roots
+# (Application Support on macOS, XDG data on Linux, AppData on Windows)
+# for the persistence layer's settings, database, theme, log, and cache
+# paths. Pinned at the workspace level so all filesystem entry points
+# share the same OS mapping semantics.
+directories = "5"
 
 # Release profile tuned for distributable binaries: full optimisation,
 # thin LTO, single codegen unit, stripped symbols, abort on panic. The

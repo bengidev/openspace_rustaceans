@@ -105,6 +105,11 @@ thiserror = { workspace = true }
 # via the workspace.
 notify = { workspace = true }
 
+# `directories` resolves the platform-conventional root that all
+# persistence artefact paths hang from. `DataDirs` wraps it behind typed
+# getters so downstream stores do not duplicate OS-specific path logic.
+directories = { workspace = true }
+
 # `async-trait` lets repository impls satisfy the Domain crate's async
 # trait surface.
 async-trait = { workspace = true }
