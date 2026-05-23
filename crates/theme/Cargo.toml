@@ -14,6 +14,7 @@ static_assertions = { workspace = true }
 notify = { workspace = true }
 tokio = { workspace = true, features = ["sync", "time", "macros", "rt"] }
 tracing = { workspace = true }
+iced = { workspace = true }
 
 [lints]
 workspace = true
