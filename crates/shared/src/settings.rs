@@ -36,6 +36,8 @@
 //! the Rust field names (snake_case) so users edit the file in the
 //! shape they read in source.
 
+use std::sync::{mpsc, Arc, Mutex, RwLock};
+
 use serde::{Deserialize, Serialize};
 use static_assertions::assert_impl_all;
 
@@ -256,9 +258,171 @@ impl Default for Settings {
 
 assert_impl_all!(Settings: Send, Sync);
 
+/// Effective OS chrome appearance used by [`ThemeMode::System`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SystemAppearance {
+    Light,
+    Dark,
+}
+
+/// Event emitted when active-theme resolution picks a new theme id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveThemeChange {
+    pub theme_id: ThemeId,
+}
+
+/// Mockable source for OS appearance.
+pub trait SystemAppearanceSource: Send + Sync {
+    fn current_appearance(&self) -> SystemAppearance;
+    fn subscribe(&self) -> mpsc::Receiver<SystemAppearance>;
+}
+
+/// Safe fallback source for platforms without OS push notifications.
+#[derive(Debug)]
+pub struct PollingSystemAppearanceSource {
+    appearance: Arc<RwLock<SystemAppearance>>,
+    subscribers: Mutex<Vec<mpsc::Sender<SystemAppearance>>>,
+}
+
+impl PollingSystemAppearanceSource {
+    #[must_use]
+    pub fn new(initial: SystemAppearance) -> Self {
+        Self {
+            appearance: Arc::new(RwLock::new(initial)),
+            subscribers: Mutex::new(Vec::new()),
+        }
+    }
+
+    pub fn poll_update(&self, appearance: SystemAppearance) {
+        let mut current = self
+            .appearance
+            .write()
+            .expect("PollingSystemAppearanceSource appearance RwLock poisoned");
+        if *current == appearance {
+            return;
+        }
+        *current = appearance;
+        drop(current);
+        self.subscribers
+            .lock()
+            .expect("PollingSystemAppearanceSource subscribers Mutex poisoned")
+            .retain(|tx| tx.send(appearance).is_ok());
+    }
+}
+
+impl SystemAppearanceSource for PollingSystemAppearanceSource {
+    fn current_appearance(&self) -> SystemAppearance {
+        *self
+            .appearance
+            .read()
+            .expect("PollingSystemAppearanceSource appearance RwLock poisoned")
+    }
+
+    fn subscribe(&self) -> mpsc::Receiver<SystemAppearance> {
+        let (tx, rx) = mpsc::channel();
+        self.subscribers
+            .lock()
+            .expect("PollingSystemAppearanceSource subscribers Mutex poisoned")
+            .push(tx);
+        rx
+    }
+}
+
+#[derive(Debug)]
+pub struct ActiveThemeResolver<S> {
+    settings: Settings,
+    source: S,
+    active_theme_id: ThemeId,
+}
+
+impl<S: SystemAppearanceSource> ActiveThemeResolver<S> {
+    #[must_use]
+    pub fn new(settings: Settings, source: S) -> Self {
+        let active_theme_id = resolve_theme_id(&settings, source.current_appearance());
+        Self {
+            settings,
+            source,
+            active_theme_id,
+        }
+    }
+
+    #[must_use]
+    pub fn active_theme_id(&self) -> &ThemeId {
+        &self.active_theme_id
+    }
+
+    #[must_use]
+    pub fn subscribe_system_appearance(&self) -> mpsc::Receiver<SystemAppearance> {
+        self.source.subscribe()
+    }
+
+    pub fn apply_system_appearance(
+        &mut self,
+        appearance: SystemAppearance,
+    ) -> Option<ActiveThemeChange> {
+        if self.settings.theme_mode != ThemeMode::System {
+            return None;
+        }
+        let next = resolve_theme_id(&self.settings, appearance);
+        if next == self.active_theme_id {
+            return None;
+        }
+        self.active_theme_id = next.clone();
+        Some(ActiveThemeChange { theme_id: next })
+    }
+}
+
+#[must_use]
+pub fn resolve_theme_id(settings: &Settings, system_appearance: SystemAppearance) -> ThemeId {
+    match settings.theme_mode {
+        ThemeMode::Light => settings.theme_id_light.clone(),
+        ThemeMode::Dark => settings.theme_id_dark.clone(),
+        ThemeMode::System => match system_appearance {
+            SystemAppearance::Light => settings.theme_id_light.clone(),
+            SystemAppearance::Dark => settings.theme_id_dark.clone(),
+        },
+    }
+}
+
+assert_impl_all!(SystemAppearance: Send, Sync);
+assert_impl_all!(ActiveThemeChange: Send, Sync);
+assert_impl_all!(PollingSystemAppearanceSource: Send, Sync);
+assert_impl_all!(ActiveThemeResolver<PollingSystemAppearanceSource>: Send, Sync);
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Debug)]
+    struct MockSystemAppearanceSource {
+        appearance: SystemAppearance,
+    }
+
+    impl MockSystemAppearanceSource {
+        fn new(appearance: SystemAppearance) -> Self {
+            Self { appearance }
+        }
+    }
+
+    impl SystemAppearanceSource for MockSystemAppearanceSource {
+        fn current_appearance(&self) -> SystemAppearance {
+            self.appearance
+        }
+
+        fn subscribe(&self) -> mpsc::Receiver<SystemAppearance> {
+            let (_tx, rx) = mpsc::channel();
+            rx
+        }
+    }
+
+    fn theme_settings(mode: ThemeMode) -> Settings {
+        Settings {
+            theme_mode: mode,
+            theme_id_light: ThemeId::new("day"),
+            theme_id_dark: ThemeId::new("night"),
+            ..Settings::default()
+        }
+    }
 
     /// `Settings::default()` returns the documented empty-file shape.
     /// Locks every default slot so a casual change to one of the
@@ -454,5 +618,68 @@ mod tests {
             .get("keybinding_profile")
             .expect("keybinding_profile field present");
         assert_eq!(profile.as_str(), Some("default"));
+    }
+
+    #[test]
+    fn explicit_theme_modes_select_configured_slots() {
+        assert_eq!(
+            resolve_theme_id(&theme_settings(ThemeMode::Light), SystemAppearance::Dark).as_str(),
+            "day"
+        );
+        assert_eq!(
+            resolve_theme_id(&theme_settings(ThemeMode::Dark), SystemAppearance::Light).as_str(),
+            "night"
+        );
+    }
+
+    #[test]
+    fn system_mode_reads_initial_system_appearance() {
+        let light = ActiveThemeResolver::new(
+            theme_settings(ThemeMode::System),
+            MockSystemAppearanceSource::new(SystemAppearance::Light),
+        );
+        assert_eq!(light.active_theme_id().as_str(), "day");
+
+        let dark = ActiveThemeResolver::new(
+            theme_settings(ThemeMode::System),
+            MockSystemAppearanceSource::new(SystemAppearance::Dark),
+        );
+        assert_eq!(dark.active_theme_id().as_str(), "night");
+    }
+
+    #[test]
+    fn system_appearance_changes_emit_active_theme_changes() {
+        let mut resolver = ActiveThemeResolver::new(
+            theme_settings(ThemeMode::System),
+            MockSystemAppearanceSource::new(SystemAppearance::Light),
+        );
+        let dark = resolver
+            .apply_system_appearance(SystemAppearance::Dark)
+            .expect("light to dark emits");
+        assert_eq!(dark.theme_id.as_str(), "night");
+        let light = resolver
+            .apply_system_appearance(SystemAppearance::Light)
+            .expect("dark to light emits");
+        assert_eq!(light.theme_id.as_str(), "day");
+    }
+
+    #[test]
+    fn explicit_modes_ignore_system_appearance_changes() {
+        let mut resolver = ActiveThemeResolver::new(
+            theme_settings(ThemeMode::Light),
+            MockSystemAppearanceSource::new(SystemAppearance::Light),
+        );
+        assert!(resolver
+            .apply_system_appearance(SystemAppearance::Dark)
+            .is_none());
+        assert_eq!(resolver.active_theme_id().as_str(), "day");
+    }
+
+    #[test]
+    fn polling_fallback_notifies_subscribers_safely() {
+        let source = PollingSystemAppearanceSource::new(SystemAppearance::Light);
+        let rx = source.subscribe();
+        source.poll_update(SystemAppearance::Dark);
+        assert_eq!(rx.recv().expect("appearance event"), SystemAppearance::Dark);
     }
 }
