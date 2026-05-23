@@ -1,10 +1,19 @@
 //! Theme domain model, TOML parser, validation, bundled themes.
 
-use std::{collections::BTreeMap, fmt, fs, path::PathBuf};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt, fs,
+    path::{Path, PathBuf},
+    sync::{mpsc as std_mpsc, Arc, Mutex as StdMutex, RwLock},
+    time::{Duration, Instant},
+};
 
+use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 use static_assertions::assert_impl_all;
 use thiserror::Error;
+use tokio::sync::broadcast;
+use tracing::warn;
 
 pub const REQUIRED_UI_TOKENS: &[&str] =
     &["background", "foreground", "accent", "surface", "border"];
@@ -357,40 +366,124 @@ pub struct ThemeDiagnostic {
     pub message: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ThemeChange {
+    Created(ThemeId),
+    Reloaded(ThemeId),
+    Deleted(ThemeId),
+    ActiveThemeChanged(Option<ThemeId>),
+}
+
+const DEFAULT_DEBOUNCE: Duration = Duration::from_millis(75);
+
+#[derive(Debug)]
+struct WatcherHandle {
+    watcher: Option<RecommendedWatcher>,
+    driver: Option<std::thread::JoinHandle<()>>,
+}
+impl Drop for WatcherHandle {
+    fn drop(&mut self) {
+        drop(self.watcher.take());
+        if let Some(driver) = self.driver.take() {
+            let _ = driver.join();
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct ThemeStore {
-    custom_dir: Option<PathBuf>,
+    custom: Arc<RwLock<BTreeMap<String, Theme>>>,
+    diagnostics: Arc<RwLock<Vec<ThemeDiagnostic>>>,
+    active_theme: Arc<RwLock<Option<ThemeId>>>,
+    tx: broadcast::Sender<ThemeChange>,
+    watcher: StdMutex<Option<WatcherHandle>>,
 }
 impl ThemeStore {
     #[must_use]
-    pub const fn bundled() -> Self {
-        Self { custom_dir: None }
+    pub fn bundled() -> Self {
+        Self::new(None, false)
     }
     #[must_use]
     pub fn with_custom_dir(custom_dir: impl Into<PathBuf>) -> Self {
-        Self {
-            custom_dir: Some(custom_dir.into()),
-        }
+        Self::new(Some(custom_dir.into()), true)
     }
     #[must_use]
     pub fn with_data_dir(data_dir: impl Into<PathBuf>) -> Self {
         Self::with_custom_dir(data_dir.into().join("themes"))
     }
+    fn new(custom_dir: Option<PathBuf>, watch: bool) -> Self {
+        let (tx, _) = broadcast::channel(32);
+        let (custom, diagnostics) = load_custom(custom_dir.as_deref());
+        let custom = Arc::new(RwLock::new(custom));
+        let diagnostics = Arc::new(RwLock::new(diagnostics));
+        let active_theme = Arc::new(RwLock::new(None));
+        let watcher = if watch {
+            custom_dir.as_ref().and_then(|dir| {
+                spawn_theme_watcher(
+                    dir.clone(),
+                    Arc::clone(&custom),
+                    Arc::clone(&diagnostics),
+                    Arc::clone(&active_theme),
+                    tx.clone(),
+                    DEFAULT_DEBOUNCE,
+                )
+                .map_err(|err| {
+                    warn!(error = %err, path = %dir.display(), "theme watcher failed to start")
+                })
+                .ok()
+            })
+        } else {
+            None
+        };
+        Self {
+            custom,
+            diagnostics,
+            active_theme,
+            tx,
+            watcher: StdMutex::new(watcher),
+        }
+    }
+    #[must_use]
+    pub fn subscribe(&self) -> broadcast::Receiver<ThemeChange> {
+        self.tx.subscribe()
+    }
+    pub fn set_active_theme(&self, id: Option<ThemeId>) {
+        *self
+            .active_theme
+            .write()
+            .expect("ThemeStore active_theme RwLock poisoned") = id.clone();
+        let _ = self.tx.send(ThemeChange::ActiveThemeChanged(id));
+    }
+    #[must_use]
+    pub fn active_theme(&self) -> Option<ThemeId> {
+        self.active_theme
+            .read()
+            .expect("ThemeStore active_theme RwLock poisoned")
+            .clone()
+    }
     #[must_use]
     pub fn diagnostics(&self) -> Vec<ThemeDiagnostic> {
-        self.custom_themes().1
+        self.diagnostics
+            .read()
+            .expect("ThemeStore diagnostics RwLock poisoned")
+            .clone()
     }
     #[must_use]
     pub fn list(&self) -> Vec<Theme> {
         let mut themes = self.bundled_map();
-        let (custom, _) = self.custom_themes();
-        themes.extend(custom);
+        themes.extend(
+            self.custom
+                .read()
+                .expect("ThemeStore custom RwLock poisoned")
+                .clone(),
+        );
         themes.into_values().collect()
     }
     #[must_use]
     pub fn get(&self, id: &str) -> Option<Theme> {
-        let (custom, _) = self.custom_themes();
-        custom
+        self.custom
+            .read()
+            .expect("ThemeStore custom RwLock poisoned")
             .get(id)
             .cloned()
             .or_else(|| bundled_theme(id).and_then(Result::ok))
@@ -401,31 +494,150 @@ impl ThemeStore {
             .map(|theme| (theme.id.as_str().to_string(), theme))
             .collect()
     }
-    fn custom_themes(&self) -> (BTreeMap<String, Theme>, Vec<ThemeDiagnostic>) {
-        let Some(dir) = &self.custom_dir else {
-            return (BTreeMap::new(), Vec::new());
-        };
-        let Ok(entries) = fs::read_dir(dir) else {
-            return (BTreeMap::new(), Vec::new());
-        };
-        let mut themes = BTreeMap::new();
-        let mut diagnostics = Vec::new();
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|ext| ext.to_str()) != Some("toml") {
-                continue;
+}
+impl Drop for ThemeStore {
+    fn drop(&mut self) {
+        drop(
+            self.watcher
+                .lock()
+                .expect("ThemeStore watcher Mutex poisoned")
+                .take(),
+        );
+    }
+}
+
+fn load_custom(dir: Option<&Path>) -> (BTreeMap<String, Theme>, Vec<ThemeDiagnostic>) {
+    let Some(dir) = dir else {
+        return (BTreeMap::new(), Vec::new());
+    };
+    let Ok(entries) = fs::read_dir(dir) else {
+        return (BTreeMap::new(), Vec::new());
+    };
+    let mut themes = BTreeMap::new();
+    let mut diagnostics = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !is_toml(&path) {
+            continue;
+        }
+        match fs::read_to_string(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|src| ThemeFile::parse(&src).map_err(|e| e.to_string()))
+        {
+            Ok(theme) => {
+                themes.insert(theme.id.as_str().to_string(), theme);
             }
-            match fs::read_to_string(&path)
-                .map_err(|e| e.to_string())
-                .and_then(|src| ThemeFile::parse(&src).map_err(|e| e.to_string()))
-            {
-                Ok(theme) => {
-                    themes.insert(theme.id.as_str().to_string(), theme);
+            Err(message) => diagnostics.push(ThemeDiagnostic { path, message }),
+        }
+    }
+    (themes, diagnostics)
+}
+
+fn is_toml(path: &Path) -> bool {
+    path.extension().and_then(|ext| ext.to_str()) == Some("toml")
+}
+
+fn event_matches_theme_file(event: &Event) -> bool {
+    matches!(
+        event.kind,
+        EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_)
+    ) && event.paths.iter().any(|path| is_toml(path))
+}
+
+fn spawn_theme_watcher(
+    dir: PathBuf,
+    custom: Arc<RwLock<BTreeMap<String, Theme>>>,
+    diagnostics: Arc<RwLock<Vec<ThemeDiagnostic>>>,
+    active_theme: Arc<RwLock<Option<ThemeId>>>,
+    tx: broadcast::Sender<ThemeChange>,
+    debounce: Duration,
+) -> notify::Result<WatcherHandle> {
+    fs::create_dir_all(&dir)?;
+    let (event_tx, event_rx) = std_mpsc::channel();
+    let mut watcher = RecommendedWatcher::new(
+        move |res| {
+            let _ = event_tx.send(res);
+        },
+        notify::Config::default(),
+    )?;
+    watcher.watch(&dir, RecursiveMode::NonRecursive)?;
+    let driver = std::thread::spawn(move || {
+        while let Ok(res) = event_rx.recv() {
+            match res {
+                Ok(event) if event_matches_theme_file(&event) => {
+                    let deadline = Instant::now() + debounce;
+                    while let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
+                        match event_rx.recv_timeout(remaining) {
+                            Ok(Ok(next)) if event_matches_theme_file(&next) => continue,
+                            Ok(Ok(_)) => continue,
+                            Ok(Err(err)) => warn!(error = %err, "theme watcher event error"),
+                            Err(std_mpsc::RecvTimeoutError::Timeout) => break,
+                            Err(std_mpsc::RecvTimeoutError::Disconnected) => return,
+                        }
+                    }
+                    reload_themes(&dir, &custom, &diagnostics, &active_theme, &tx);
                 }
-                Err(message) => diagnostics.push(ThemeDiagnostic { path, message }),
+                Ok(_) => {}
+                Err(err) => warn!(error = %err, "theme watcher event error"),
             }
         }
-        (themes, diagnostics)
+    });
+    Ok(WatcherHandle {
+        watcher: Some(watcher),
+        driver: Some(driver),
+    })
+}
+
+fn reload_themes(
+    dir: &Path,
+    custom: &Arc<RwLock<BTreeMap<String, Theme>>>,
+    diagnostics: &Arc<RwLock<Vec<ThemeDiagnostic>>>,
+    active_theme: &Arc<RwLock<Option<ThemeId>>>,
+    tx: &broadcast::Sender<ThemeChange>,
+) {
+    let old = custom
+        .read()
+        .expect("ThemeStore custom RwLock poisoned")
+        .clone();
+    let (new, new_diagnostics) = load_custom(Some(dir));
+    *custom.write().expect("ThemeStore custom RwLock poisoned") = new.clone();
+    *diagnostics
+        .write()
+        .expect("ThemeStore diagnostics RwLock poisoned") = new_diagnostics;
+
+    let old_ids = old.keys().cloned().collect::<BTreeSet<_>>();
+    let new_ids = new.keys().cloned().collect::<BTreeSet<_>>();
+    for id in new_ids.difference(&old_ids) {
+        let _ = tx.send(ThemeChange::Created(ThemeId::new(id.clone())));
+    }
+    for id in old_ids.intersection(&new_ids) {
+        if old.get(id) != new.get(id) {
+            let theme_id = ThemeId::new(id.clone());
+            let _ = tx.send(ThemeChange::Reloaded(theme_id.clone()));
+            if active_theme
+                .read()
+                .expect("ThemeStore active_theme RwLock poisoned")
+                .as_ref()
+                == Some(&theme_id)
+            {
+                let _ = tx.send(ThemeChange::ActiveThemeChanged(Some(theme_id)));
+            }
+        }
+    }
+    for id in old_ids.difference(&new_ids) {
+        let theme_id = ThemeId::new(id.clone());
+        let _ = tx.send(ThemeChange::Deleted(theme_id.clone()));
+        if active_theme
+            .read()
+            .expect("ThemeStore active_theme RwLock poisoned")
+            .as_ref()
+            == Some(&theme_id)
+        {
+            *active_theme
+                .write()
+                .expect("ThemeStore active_theme RwLock poisoned") = None;
+            let _ = tx.send(ThemeChange::ActiveThemeChanged(None));
+        }
     }
 }
 
@@ -529,6 +741,58 @@ mod tests {
         assert_eq!(theme.metadata.display_name, "Custom Override");
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].metadata.display_name, "Custom Override");
+    }
+    #[tokio::test]
+    async fn live_reload_emits_reload_within_500ms() {
+        let dir = temp_theme_dir("live-reload");
+        let custom = VALID.replace("default-dark", "custom-live").replace(
+            "display_name = \"Default Dark\"",
+            "display_name = \"Custom Live\"",
+        );
+        let path = dir.join("custom-live.toml");
+        fs::write(&path, custom).unwrap();
+        let store = ThemeStore::with_custom_dir(&dir);
+        let mut rx = store.subscribe();
+        store.set_active_theme(Some(ThemeId::new("custom-live")));
+        drain_events(&mut rx).await;
+
+        let edited = VALID.replace("default-dark", "custom-live").replace(
+            "display_name = \"Default Dark\"",
+            "display_name = \"Custom Live Edited\"",
+        );
+        fs::write(&path, edited).unwrap();
+
+        let mut saw_reload = false;
+        let mut saw_active = false;
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(500);
+        while tokio::time::Instant::now() < deadline && !(saw_reload && saw_active) {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            match tokio::time::timeout(remaining, rx.recv()).await {
+                Ok(Ok(ThemeChange::Reloaded(id))) if id.as_str() == "custom-live" => {
+                    saw_reload = true;
+                }
+                Ok(Ok(ThemeChange::ActiveThemeChanged(Some(id))))
+                    if id.as_str() == "custom-live" =>
+                {
+                    saw_active = true;
+                }
+                Ok(Ok(_)) => {}
+                other => panic!("unexpected reload wait result: {other:?}"),
+            }
+        }
+
+        assert!(saw_reload);
+        assert!(saw_active);
+        assert_eq!(
+            store.get("custom-live").unwrap().metadata.display_name,
+            "Custom Live Edited"
+        );
+    }
+    async fn drain_events(rx: &mut broadcast::Receiver<ThemeChange>) {
+        while tokio::time::timeout(Duration::from_millis(10), rx.recv())
+            .await
+            .is_ok()
+        {}
     }
     fn temp_theme_dir(name: &str) -> PathBuf {
         let dir = temp_data_dir(name).join("themes");
