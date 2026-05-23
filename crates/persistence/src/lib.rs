@@ -58,6 +58,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod attachment;
 pub mod chat;
 pub mod db;
 pub mod migration;
@@ -67,6 +68,7 @@ mod sql;
 pub mod turn;
 pub mod workspace;
 
+pub use attachment::SqliteAttachmentStore;
 pub use chat::SqliteChatRepository;
 pub use db::Database;
 pub use migration::MigrationRunner;
