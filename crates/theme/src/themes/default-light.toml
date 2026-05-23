@@ -1,0 +1,42 @@
+id = "default-light"
+appearance = "light"
+
+[metadata]
+display_name = "Default Light"
+author = "OpenSpace"
+description = "Bundled Default Light theme."
+
+[ui]
+background = "#F8F8F2"
+foreground = "#24292F"
+accent = "#0969DA"
+surface = "#FFFFFF"
+border = "#D0D7DE"
+
+[syntax]
+keyword = "#8250DF"
+string = "#116329"
+comment = "#6E7781"
+number = "#953800"
+function = "#0969DA"
+type = "#0550AE"
+variable = "#24292F"
+operator = "#CF222E"
+
+[terminal]
+black = "#24292F"
+red = "#CF222E"
+green = "#116329"
+yellow = "#4D2D00"
+blue = "#0969DA"
+magenta = "#8250DF"
+cyan = "#1B7C83"
+white = "#F6F8FA"
+bright_black = "#57606A"
+bright_red = "#A40E26"
+bright_green = "#1A7F37"
+bright_yellow = "#9A6700"
+bright_blue = "#218BFF"
+bright_magenta = "#A475F9"
+bright_cyan = "#3192AA"
+bright_white = "#FFFFFF"

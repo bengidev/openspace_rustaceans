@@ -1,0 +1,42 @@
+id = "solarized-light"
+appearance = "light"
+
+[metadata]
+display_name = "Solarized Light"
+author = "OpenSpace"
+description = "Bundled Solarized Light theme."
+
+[ui]
+background = "#FDF6E3"
+foreground = "#657B83"
+accent = "#268BD2"
+surface = "#EEE8D5"
+border = "#93A1A1"
+
+[syntax]
+keyword = "#859900"
+string = "#2AA198"
+comment = "#93A1A1"
+number = "#D33682"
+function = "#268BD2"
+type = "#B58900"
+variable = "#657B83"
+operator = "#CB4B16"
+
+[terminal]
+black = "#073642"
+red = "#DC322F"
+green = "#859900"
+yellow = "#B58900"
+blue = "#268BD2"
+magenta = "#D33682"
+cyan = "#2AA198"
+white = "#EEE8D5"
+bright_black = "#002B36"
+bright_red = "#CB4B16"
+bright_green = "#586E75"
+bright_yellow = "#657B83"
+bright_blue = "#839496"
+bright_magenta = "#6C71C4"
+bright_cyan = "#93A1A1"
+bright_white = "#FDF6E3"

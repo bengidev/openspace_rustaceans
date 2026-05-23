@@ -15,6 +15,7 @@ members = [
     "crates/shared",
     "crates/ai-providers",
     "crates/persistence",
+    "crates/theme",
     "crates/feature-welcome",
     "crates/feature-home",
     "crates/feature-home/sub-features/*",
