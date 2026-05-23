@@ -31,6 +31,7 @@ CREATE TABLE workspaces (
     created_at      INTEGER NOT NULL
 );
 
+-- Read path: recent-workspace picker lists workspaces by last-opened time.
 CREATE INDEX idx_workspaces_last_opened
     ON workspaces (last_opened_at DESC);
 
@@ -50,6 +51,7 @@ CREATE TABLE sessions (
     FOREIGN KEY (workspace_id) REFERENCES workspaces (id) ON DELETE CASCADE
 );
 
+-- Read path: session browser lists layouts for one workspace by recency.
 CREATE INDEX idx_sessions_workspace
     ON sessions (workspace_id, updated_at DESC);
 
@@ -71,6 +73,7 @@ CREATE TABLE chats (
     FOREIGN KEY (workspace_id) REFERENCES workspaces (id) ON DELETE CASCADE
 );
 
+-- Read path: chat sidebar lists conversations for one workspace by recency.
 CREATE INDEX idx_chats_workspace
     ON chats (workspace_id, updated_at DESC);
 
@@ -91,9 +94,11 @@ CREATE TABLE turns (
     FOREIGN KEY (parent_turn_id) REFERENCES turns (id) ON DELETE SET NULL
 );
 
+-- Read path: transcript render fetches a chat's turns in stable order.
 CREATE INDEX idx_turns_chat_sequence
     ON turns (chat_id, sequence);
 
+-- Read path: branch navigation resolves children from a parent turn.
 CREATE INDEX idx_turns_parent
     ON turns (parent_turn_id);
 
@@ -113,6 +118,7 @@ CREATE TABLE attachments (
     FOREIGN KEY (turn_id) REFERENCES turns (id) ON DELETE CASCADE
 );
 
+-- Read path: turn render fetches all attachments attached to that turn.
 CREATE INDEX idx_attachments_turn
     ON attachments (turn_id);
 
@@ -140,5 +146,6 @@ CREATE TABLE recent_workspaces (
     FOREIGN KEY (workspace_id) REFERENCES workspaces (id) ON DELETE CASCADE
 );
 
+-- Read path: home screen renders recent workspaces by recency.
 CREATE INDEX idx_recent_workspaces_last_opened
     ON recent_workspaces (last_opened_at DESC);
