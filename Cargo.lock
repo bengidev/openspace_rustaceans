@@ -1205,6 +1205,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "openspace-theme"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "static_assertions",
+ "thiserror 1.0.69",
+ "toml",
+]
+
+[[package]]
 name = "option-ext"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
