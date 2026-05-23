@@ -8,7 +8,7 @@ use openspace_shared::persistence::{PersistenceError, SessionRepository};
 use rusqlite::{params, OptionalExtension};
 use uuid::Uuid;
 
-use crate::sql::{id_to_string, map_sql_error, not_found, ts_to_datetime};
+use crate::sql::{id_to_string, map_sql_error, not_found, ts_to_datetime, write_transaction};
 use crate::Database;
 
 /// SQLite implementation of [`SessionRepository`].
@@ -37,10 +37,8 @@ impl SqliteSessionRepository {
 impl SessionRepository for SqliteSessionRepository {
     async fn upsert(&self, session: &Session) -> Result<(), PersistenceError> {
         let row = SessionRow::from_session(session);
-        self.db
-            .connection()
-            .call(move |conn| {
-                conn.execute(
+        write_transaction(&self.db, move |tx| {
+                tx.execute(
                     "INSERT INTO sessions (id, workspace_id, name, mode, layout_blob, active_pane_id, updated_at)
                      VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6)
                      ON CONFLICT(id) DO UPDATE SET
@@ -51,9 +49,8 @@ impl SessionRepository for SqliteSessionRepository {
                     params![row.id, row.workspace_id, row.title, row.mode, "", row.updated_at],
                 )?;
                 Ok(())
-            })
-            .await
-            .map_err(map_sql_error)
+        })
+        .await
     }
 
     async fn get(&self, id: SessionId) -> Result<Option<Session>, PersistenceError> {
@@ -75,17 +72,14 @@ impl SessionRepository for SqliteSessionRepository {
 
     async fn delete(&self, id: SessionId) -> Result<(), PersistenceError> {
         let id = id_to_string!(id);
-        self.db
-            .connection()
-            .call(move |conn| {
-                let changed = conn.execute("DELETE FROM sessions WHERE id = ?1", [id.clone()])?;
-                if changed == 0 {
-                    return Err(not_found(format!("session/{id}")));
-                }
-                Ok(())
-            })
-            .await
-            .map_err(map_sql_error)
+        write_transaction(&self.db, move |tx| {
+            let changed = tx.execute("DELETE FROM sessions WHERE id = ?1", [id.clone()])?;
+            if changed == 0 {
+                return Err(not_found(format!("session/{id}")));
+            }
+            Ok(())
+        })
+        .await
     }
 
     async fn list_for_workspace(

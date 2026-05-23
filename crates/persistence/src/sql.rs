@@ -1,6 +1,16 @@
 //! Shared SQLite helpers.
 
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
 use openspace_shared::persistence::PersistenceError;
+use rusqlite::TransactionBehavior;
+
+use crate::Database;
+
+const WRITE_RETRY_BUDGET: Duration = Duration::from_secs(5);
+const WRITE_RETRY_INITIAL_BACKOFF: Duration = Duration::from_millis(10);
+const WRITE_RETRY_MAX_BACKOFF: Duration = Duration::from_millis(250);
 
 macro_rules! id_to_string {
     ($id:expr) => {
@@ -25,6 +35,48 @@ pub(crate) fn conflict(message: String) -> tokio_rusqlite::Error {
     tokio_rusqlite::Error::Rusqlite(rusqlite::Error::InvalidParameterName(format!(
         "conflict: {message}"
     )))
+}
+
+pub(crate) async fn write_transaction<T, F>(db: &Database, op: F) -> Result<T, PersistenceError>
+where
+    T: Send + 'static,
+    F: Fn(&rusqlite::Transaction<'_>) -> tokio_rusqlite::Result<T> + Send + Sync + 'static,
+{
+    let started = Instant::now();
+    let mut backoff = WRITE_RETRY_INITIAL_BACKOFF;
+    let op = Arc::new(op);
+
+    loop {
+        let op_for_call = Arc::clone(&op);
+        let result = db
+            .connection()
+            .call(move |conn| {
+                let tx = conn
+                    .transaction_with_behavior(TransactionBehavior::Immediate)
+                    .map_err(tokio_rusqlite::Error::from)?;
+                let output = op_for_call(&tx)?;
+                tx.commit().map_err(tokio_rusqlite::Error::from)?;
+                Ok(output)
+            })
+            .await;
+
+        match result {
+            Ok(output) => return Ok(output),
+            Err(err) if is_busy(&err) && started.elapsed() < WRITE_RETRY_BUDGET => {
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(WRITE_RETRY_MAX_BACKOFF);
+            }
+            Err(err) => return Err(map_sql_error(err)),
+        }
+    }
+}
+
+fn is_busy(err: &tokio_rusqlite::Error) -> bool {
+    matches!(
+        err,
+        tokio_rusqlite::Error::Rusqlite(rusqlite::Error::SqliteFailure(code, _))
+            if matches!(code.code, rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+    )
 }
 
 pub(crate) fn map_sql_error(err: tokio_rusqlite::Error) -> PersistenceError {

@@ -8,7 +8,7 @@ use openspace_shared::persistence::{ChatRepository, PersistenceError};
 use rusqlite::{params, OptionalExtension};
 use uuid::Uuid;
 
-use crate::sql::{conflict, id_to_string, map_sql_error, not_found};
+use crate::sql::{conflict, id_to_string, map_sql_error, not_found, write_transaction};
 use crate::Database;
 
 /// SQLite implementation of [`ChatRepository`].
@@ -33,10 +33,8 @@ impl ChatRepository for SqliteChatRepository {
         chat: &Conversation,
     ) -> Result<(), PersistenceError> {
         let row = ChatRow::from_chat(workspace_id, chat);
-        self.db
-            .connection()
-            .call(move |conn| {
-                conn.execute(
+        write_transaction(&self.db, move |tx| {
+                tx.execute(
                     "INSERT INTO chats (id, workspace_id, title, model_provider, model_id, system_prompt, head_turn_id, created_at, updated_at)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8)
                      ON CONFLICT(id) DO UPDATE SET
@@ -56,9 +54,8 @@ impl ChatRepository for SqliteChatRepository {
                     ],
                 )?;
                 Ok(())
-            })
-            .await
-            .map_err(map_sql_error)
+        })
+        .await
     }
 
     async fn get(&self, id: ChatId) -> Result<Option<Conversation>, PersistenceError> {
@@ -80,17 +77,14 @@ impl ChatRepository for SqliteChatRepository {
 
     async fn delete(&self, id: ChatId) -> Result<(), PersistenceError> {
         let id = id_to_string!(id);
-        self.db
-            .connection()
-            .call(move |conn| {
-                let changed = conn.execute("DELETE FROM chats WHERE id = ?1", [id.clone()])?;
-                if changed == 0 {
-                    return Err(not_found(format!("chat/{id}")));
-                }
-                Ok(())
-            })
-            .await
-            .map_err(map_sql_error)
+        write_transaction(&self.db, move |tx| {
+            let changed = tx.execute("DELETE FROM chats WHERE id = ?1", [id.clone()])?;
+            if changed == 0 {
+                return Err(not_found(format!("chat/{id}")));
+            }
+            Ok(())
+        })
+        .await
     }
 
     async fn list_by_workspace(
@@ -119,41 +113,38 @@ impl ChatRepository for SqliteChatRepository {
     ) -> Result<(), PersistenceError> {
         let chat_id = id_to_string!(chat_id);
         let turn_id = turn_id.map(|id| id_to_string!(id));
-        self.db
-            .connection()
-            .call(move |conn| {
-                let exists: bool = conn.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM chats WHERE id = ?1)",
-                    [chat_id.clone()],
-                    |row| row.get(0),
-                )?;
-                if !exists {
-                    return Err(not_found(format!("chat/{chat_id}")));
-                }
-                if let Some(turn_id) = &turn_id {
-                    let owner: Option<String> = conn
-                        .query_row(
-                            "SELECT chat_id FROM turns WHERE id = ?1",
-                            [turn_id],
-                            |row| row.get(0),
-                        )
-                        .optional()?;
-                    match owner {
-                        Some(owner) if owner == chat_id => {}
-                        Some(_) => {
-                            return Err(conflict(format!("turn/{turn_id} belongs to another chat")))
-                        }
-                        None => return Err(not_found(format!("turn/{turn_id}"))),
+        write_transaction(&self.db, move |tx| {
+            let exists: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM chats WHERE id = ?1)",
+                [chat_id.clone()],
+                |row| row.get(0),
+            )?;
+            if !exists {
+                return Err(not_found(format!("chat/{chat_id}")));
+            }
+            if let Some(turn_id) = &turn_id {
+                let owner: Option<String> = tx
+                    .query_row(
+                        "SELECT chat_id FROM turns WHERE id = ?1",
+                        [turn_id],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                match owner {
+                    Some(owner) if owner == chat_id => {}
+                    Some(_) => {
+                        return Err(conflict(format!("turn/{turn_id} belongs to another chat")))
                     }
+                    None => return Err(not_found(format!("turn/{turn_id}"))),
                 }
-                conn.execute(
-                    "UPDATE chats SET head_turn_id = ?2, updated_at = ?3 WHERE id = ?1",
-                    params![chat_id, turn_id, Utc::now().timestamp()],
-                )?;
-                Ok(())
-            })
-            .await
-            .map_err(map_sql_error)
+            }
+            tx.execute(
+                "UPDATE chats SET head_turn_id = ?2, updated_at = ?3 WHERE id = ?1",
+                params![chat_id, turn_id, Utc::now().timestamp()],
+            )?;
+            Ok(())
+        })
+        .await
     }
 
     async fn search(

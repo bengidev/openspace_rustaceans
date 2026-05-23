@@ -7,7 +7,7 @@ use openspace_shared::persistence::{PersistenceError, TurnRepository};
 use rusqlite::{params, OptionalExtension};
 use uuid::Uuid;
 
-use crate::sql::{id_to_string, map_sql_error, ts_to_datetime};
+use crate::sql::{id_to_string, map_sql_error, ts_to_datetime, write_transaction};
 use crate::Database;
 
 /// SQLite implementation of [`TurnRepository`].
@@ -36,31 +36,28 @@ impl SqliteTurnRepository {
         turn: &Turn,
     ) -> Result<(), PersistenceError> {
         let row = TurnRow::from_turn(chat_id, parent_turn_id, turn)?;
-        self.db
-            .connection()
-            .call(move |conn| {
-                let sequence: i64 = conn.query_row(
-                    "SELECT COALESCE(MAX(sequence), 0) + 1 FROM turns WHERE chat_id = ?1",
-                    [&row.chat_id],
-                    |row| row.get(0),
-                )?;
-                conn.execute(
-                    "INSERT INTO turns (id, chat_id, parent_turn_id, kind, payload_json, sequence, created_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                    params![
-                        row.id,
-                        row.chat_id,
-                        row.parent_turn_id,
-                        row.kind,
-                        row.payload_json,
-                        sequence,
-                        row.created_at
-                    ],
-                )?;
-                Ok(())
-            })
-            .await
-            .map_err(map_sql_error)
+        write_transaction(&self.db, move |tx| {
+            let sequence: i64 = tx.query_row(
+                "SELECT COALESCE(MAX(sequence), 0) + 1 FROM turns WHERE chat_id = ?1",
+                [&row.chat_id],
+                |row| row.get(0),
+            )?;
+            tx.execute(
+                "INSERT INTO turns (id, chat_id, parent_turn_id, kind, payload_json, sequence, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    row.id,
+                    row.chat_id,
+                    row.parent_turn_id,
+                    row.kind,
+                    row.payload_json,
+                    sequence,
+                    row.created_at
+                ],
+            )?;
+            Ok(())
+        })
+        .await
     }
 }
 

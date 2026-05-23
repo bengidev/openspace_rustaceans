@@ -12,6 +12,7 @@ use openspace_shared::workspace::{Workspace, WorkspaceRef};
 use rusqlite::{params, OptionalExtension};
 use uuid::Uuid;
 
+use crate::sql::write_transaction;
 use crate::Database;
 
 /// SQLite implementation of [`WorkspaceRepository`].
@@ -32,27 +33,24 @@ impl SqliteWorkspaceRepository {
 impl WorkspaceRepository for SqliteWorkspaceRepository {
     async fn upsert(&self, workspace: &Workspace) -> Result<(), PersistenceError> {
         let row = WorkspaceRow::from_workspace(workspace);
-        self.db
-            .connection()
-            .call(move |conn| {
-                conn.execute(
-                    "INSERT INTO workspaces (id, root_path, last_opened_at, trust_mode, created_at)
+        write_transaction(&self.db, move |tx| {
+            tx.execute(
+                "INSERT INTO workspaces (id, root_path, last_opened_at, trust_mode, created_at)
                      VALUES (?1, ?2, ?3, ?4, ?5)
                      ON CONFLICT(id) DO UPDATE SET
                         root_path = excluded.root_path,
                         trust_mode = excluded.trust_mode",
-                    params![
-                        row.id,
-                        row.root_path,
-                        row.last_opened_at,
-                        row.trust_mode,
-                        row.created_at
-                    ],
-                )?;
-                Ok(())
-            })
-            .await
-            .map_err(map_sql_error)
+                params![
+                    row.id,
+                    row.root_path,
+                    row.last_opened_at,
+                    row.trust_mode,
+                    row.created_at
+                ],
+            )?;
+            Ok(())
+        })
+        .await
     }
 
     async fn get(&self, id: WorkspaceId) -> Result<Option<Workspace>, PersistenceError> {
@@ -74,31 +72,28 @@ impl WorkspaceRepository for SqliteWorkspaceRepository {
 
     async fn delete(&self, id: WorkspaceId) -> Result<(), PersistenceError> {
         let id = id_to_string(id);
-        self.db
-            .connection()
-            .call(move |conn| {
-                let has_sessions: bool = conn.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM sessions WHERE workspace_id = ?1)",
-                    [id.clone()],
-                    |row| row.get(0),
-                )?;
-                if has_sessions {
-                    return Err(tokio_rusqlite::Error::Rusqlite(
-                        rusqlite::Error::InvalidParameterName(format!(
-                            "conflict: workspace/{id} owns sessions"
-                        )),
-                    ));
-                }
-                let changed = conn.execute("DELETE FROM workspaces WHERE id = ?1", [id.clone()])?;
-                if changed == 0 {
-                    return Err(tokio_rusqlite::Error::Rusqlite(
-                        rusqlite::Error::InvalidParameterName(format!("not found: workspace/{id}")),
-                    ));
-                }
-                Ok(())
-            })
-            .await
-            .map_err(map_sql_error)
+        write_transaction(&self.db, move |tx| {
+            let has_sessions: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sessions WHERE workspace_id = ?1)",
+                [id.clone()],
+                |row| row.get(0),
+            )?;
+            if has_sessions {
+                return Err(tokio_rusqlite::Error::Rusqlite(
+                    rusqlite::Error::InvalidParameterName(format!(
+                        "conflict: workspace/{id} owns sessions"
+                    )),
+                ));
+            }
+            let changed = tx.execute("DELETE FROM workspaces WHERE id = ?1", [id.clone()])?;
+            if changed == 0 {
+                return Err(tokio_rusqlite::Error::Rusqlite(
+                    rusqlite::Error::InvalidParameterName(format!("not found: workspace/{id}")),
+                ));
+            }
+            Ok(())
+        })
+        .await
     }
 
     async fn list(&self) -> Result<Vec<Workspace>, PersistenceError> {
@@ -137,45 +132,39 @@ impl RecentWorkspacesRepository for SqliteRecentWorkspacesRepository {
     async fn record_opened(&self, id: WorkspaceId) -> Result<(), PersistenceError> {
         let id = id_to_string(id);
         let now = Utc::now().timestamp();
-        self.db
-            .connection()
-            .call(move |conn| {
-                let exists: bool = conn.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM workspaces WHERE id = ?1)",
-                    [id.clone()],
-                    |row| row.get(0),
-                )?;
-                if !exists {
-                    return Err(tokio_rusqlite::Error::Rusqlite(
-                        rusqlite::Error::InvalidParameterName(format!("not found: workspace/{id}")),
-                    ));
-                }
-                conn.execute(
-                    "INSERT INTO recent_workspaces (workspace_id, last_opened_at)
+        write_transaction(&self.db, move |tx| {
+            let exists: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM workspaces WHERE id = ?1)",
+                [id.clone()],
+                |row| row.get(0),
+            )?;
+            if !exists {
+                return Err(tokio_rusqlite::Error::Rusqlite(
+                    rusqlite::Error::InvalidParameterName(format!("not found: workspace/{id}")),
+                ));
+            }
+            tx.execute(
+                "INSERT INTO recent_workspaces (workspace_id, last_opened_at)
                      VALUES (?1, ?2)
                      ON CONFLICT(workspace_id) DO UPDATE SET
                         last_opened_at = excluded.last_opened_at",
-                    params![id, now],
-                )?;
-                Ok(())
-            })
-            .await
-            .map_err(map_sql_error)
+                params![id, now],
+            )?;
+            Ok(())
+        })
+        .await
     }
 
     async fn forget(&self, id: WorkspaceId) -> Result<(), PersistenceError> {
         let id = id_to_string(id);
-        self.db
-            .connection()
-            .call(move |conn| {
-                conn.execute(
-                    "DELETE FROM recent_workspaces WHERE workspace_id = ?1",
-                    [id],
-                )?;
-                Ok(())
-            })
-            .await
-            .map_err(map_sql_error)
+        write_transaction(&self.db, move |tx| {
+            tx.execute(
+                "DELETE FROM recent_workspaces WHERE workspace_id = ?1",
+                [id.clone()],
+            )?;
+            Ok(())
+        })
+        .await
     }
 
     async fn list(&self, limit: Option<usize>) -> Result<Vec<WorkspaceRef>, PersistenceError> {
