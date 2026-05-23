@@ -1,6 +1,6 @@
 //! Theme domain model, TOML parser, validation, bundled themes.
 
-use std::fmt;
+use std::{collections::BTreeMap, fmt, fs, path::PathBuf};
 
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 use static_assertions::assert_impl_all;
@@ -351,6 +351,84 @@ pub fn bundled_theme(id: &str) -> Option<Result<Theme, ThemeError>> {
         .map(|b| ThemeFile::parse(b.source))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThemeDiagnostic {
+    pub path: PathBuf,
+    pub message: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ThemeStore {
+    custom_dir: Option<PathBuf>,
+}
+impl ThemeStore {
+    #[must_use]
+    pub const fn bundled() -> Self {
+        Self { custom_dir: None }
+    }
+    #[must_use]
+    pub fn with_custom_dir(custom_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            custom_dir: Some(custom_dir.into()),
+        }
+    }
+    #[must_use]
+    pub fn with_data_dir(data_dir: impl Into<PathBuf>) -> Self {
+        Self::with_custom_dir(data_dir.into().join("themes"))
+    }
+    #[must_use]
+    pub fn diagnostics(&self) -> Vec<ThemeDiagnostic> {
+        self.custom_themes().1
+    }
+    #[must_use]
+    pub fn list(&self) -> Vec<Theme> {
+        let mut themes = self.bundled_map();
+        let (custom, _) = self.custom_themes();
+        themes.extend(custom);
+        themes.into_values().collect()
+    }
+    #[must_use]
+    pub fn get(&self, id: &str) -> Option<Theme> {
+        let (custom, _) = self.custom_themes();
+        custom
+            .get(id)
+            .cloned()
+            .or_else(|| bundled_theme(id).and_then(Result::ok))
+    }
+    fn bundled_map(&self) -> BTreeMap<String, Theme> {
+        bundled_themes()
+            .filter_map(Result::ok)
+            .map(|theme| (theme.id.as_str().to_string(), theme))
+            .collect()
+    }
+    fn custom_themes(&self) -> (BTreeMap<String, Theme>, Vec<ThemeDiagnostic>) {
+        let Some(dir) = &self.custom_dir else {
+            return (BTreeMap::new(), Vec::new());
+        };
+        let Ok(entries) = fs::read_dir(dir) else {
+            return (BTreeMap::new(), Vec::new());
+        };
+        let mut themes = BTreeMap::new();
+        let mut diagnostics = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("toml") {
+                continue;
+            }
+            match fs::read_to_string(&path)
+                .map_err(|e| e.to_string())
+                .and_then(|src| ThemeFile::parse(&src).map_err(|e| e.to_string()))
+            {
+                Ok(theme) => {
+                    themes.insert(theme.id.as_str().to_string(), theme);
+                }
+                Err(message) => diagnostics.push(ThemeDiagnostic { path, message }),
+            }
+        }
+        (themes, diagnostics)
+    }
+}
+
 assert_impl_all!(Theme: Send, Sync);
 assert_impl_all!(ThemeError: Send, Sync);
 
@@ -406,5 +484,62 @@ mod tests {
         let encoded = toml::to_string(&Wrapper { color }).unwrap();
         let decoded: Wrapper = toml::from_str(&encoded).unwrap();
         assert_eq!(color, decoded.color);
+    }
+    #[test]
+    fn theme_store_loads_custom_theme() {
+        let data_dir = temp_data_dir("load");
+        let themes_dir = data_dir.join("themes");
+        fs::create_dir_all(&themes_dir).unwrap();
+        let custom = VALID.replace("default-dark", "custom-dark").replace(
+            "display_name = \"Default Dark\"",
+            "display_name = \"Custom Dark\"",
+        );
+        fs::write(themes_dir.join("custom-dark.toml"), custom).unwrap();
+        fs::write(themes_dir.join("broken.toml"), "not = ").unwrap();
+
+        let store = ThemeStore::with_data_dir(&data_dir);
+        let theme = store.get("custom-dark").unwrap();
+
+        assert_eq!(theme.id.as_str(), "custom-dark");
+        assert_eq!(theme.metadata.display_name, "Custom Dark");
+        assert!(store
+            .list()
+            .iter()
+            .any(|theme| theme.id.as_str() == "custom-dark"));
+        assert_eq!(store.diagnostics().len(), 1);
+        assert!(store.get("broken").is_none());
+    }
+    #[test]
+    fn theme_store_custom_theme_overrides_bundled_duplicate_id() {
+        let dir = temp_theme_dir("override");
+        let custom = VALID.replace(
+            "display_name = \"Default Dark\"",
+            "display_name = \"Custom Override\"",
+        );
+        fs::write(dir.join("default-dark.toml"), custom).unwrap();
+
+        let store = ThemeStore::with_custom_dir(&dir);
+        let theme = store.get("default-dark").unwrap();
+        let listed = store
+            .list()
+            .into_iter()
+            .filter(|theme| theme.id.as_str() == "default-dark")
+            .collect::<Vec<_>>();
+
+        assert_eq!(theme.metadata.display_name, "Custom Override");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].metadata.display_name, "Custom Override");
+    }
+    fn temp_theme_dir(name: &str) -> PathBuf {
+        let dir = temp_data_dir(name).join("themes");
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+    fn temp_data_dir(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("openspace-theme-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
     }
 }
