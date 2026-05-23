@@ -64,6 +64,7 @@ pub mod migration;
 pub mod session;
 pub mod settings_store;
 mod sql;
+pub mod turn;
 pub mod workspace;
 
 pub use chat::SqliteChatRepository;
@@ -71,4 +72,5 @@ pub use db::Database;
 pub use migration::MigrationRunner;
 pub use session::SqliteSessionRepository;
 pub use settings_store::SettingsStore;
+pub use turn::SqliteTurnRepository;
 pub use workspace::{SqliteRecentWorkspacesRepository, SqliteWorkspaceRepository};
