@@ -104,6 +104,17 @@ thiserror = { workspace = true }
 # via the workspace.
 notify = { workspace = true }
 
+# `async-trait` lets repository impls satisfy the Domain crate's async
+# trait surface.
+async-trait = { workspace = true }
+
+# Repository rows map timestamp fields through the Domain timestamp type.
+chrono = { workspace = true }
+
+# Workspace ids are persisted as UUID strings and parsed back into
+# Domain id newtypes.
+uuid = { workspace = true }
+
 [dev-dependencies]
 # `tempfile` provides isolated scratch directories for the
 # `SettingsStore` tests — each test owns its own tempdir that is

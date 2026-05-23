@@ -61,7 +61,9 @@
 pub mod db;
 pub mod migration;
 pub mod settings_store;
+pub mod workspace;
 
 pub use db::Database;
 pub use migration::MigrationRunner;
 pub use settings_store::SettingsStore;
+pub use workspace::{SqliteRecentWorkspacesRepository, SqliteWorkspaceRepository};
