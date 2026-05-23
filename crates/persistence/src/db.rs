@@ -434,6 +434,113 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn open_in_memory_declares_every_initial_foreign_key() {
+        let migrations = fixture_migrations_with_initial();
+        let db = Database::open_in_memory(migrations.path())
+            .await
+            .expect("open in-memory");
+
+        let foreign_keys: Vec<(String, String, String)> = db
+            .connection()
+            .call(|conn| {
+                let tables = [
+                    "sessions",
+                    "chats",
+                    "turns",
+                    "attachments",
+                    "permission_grants",
+                    "recent_workspaces",
+                ];
+                let mut keys = Vec::new();
+                for table in tables {
+                    let mut stmt = conn.prepare(&format!("PRAGMA foreign_key_list({table})"))?;
+                    let table_keys = stmt.query_map([], |row| {
+                        Ok((
+                            table.to_string(),
+                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                        ))
+                    })?;
+                    for key in table_keys {
+                        keys.push(key?);
+                    }
+                }
+                Ok(keys)
+            })
+            .await
+            .expect("list foreign keys");
+
+        for expected in [
+            ("sessions", "workspaces", "workspace_id"),
+            ("chats", "workspaces", "workspace_id"),
+            ("turns", "chats", "chat_id"),
+            ("turns", "turns", "parent_turn_id"),
+            ("attachments", "turns", "turn_id"),
+            ("permission_grants", "workspaces", "workspace_id"),
+            ("recent_workspaces", "workspaces", "workspace_id"),
+        ] {
+            assert!(
+                foreign_keys
+                    .iter()
+                    .any(|(table, target, from)| table == expected.0
+                        && target == expected.1
+                        && from == expected.2),
+                "missing FK {expected:?}, found {foreign_keys:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn open_in_memory_creates_every_initial_index() {
+        let migrations = fixture_migrations_with_initial();
+        let db = Database::open_in_memory(migrations.path())
+            .await
+            .expect("open in-memory");
+
+        let indexes: Vec<(String, String)> = db
+            .connection()
+            .call(|conn| {
+                let tables = [
+                    "workspaces",
+                    "sessions",
+                    "chats",
+                    "turns",
+                    "attachments",
+                    "recent_workspaces",
+                ];
+                let mut indexes = Vec::new();
+                for table in tables {
+                    let mut stmt = conn.prepare(&format!("PRAGMA index_list({table})"))?;
+                    let table_indexes = stmt
+                        .query_map([], |row| Ok((table.to_string(), row.get::<_, String>(1)?)))?;
+                    for index in table_indexes {
+                        indexes.push(index?);
+                    }
+                }
+                Ok(indexes)
+            })
+            .await
+            .expect("list indexes");
+
+        for expected in [
+            ("workspaces", "idx_workspaces_last_opened"),
+            ("sessions", "idx_sessions_workspace"),
+            ("chats", "idx_chats_workspace"),
+            ("turns", "idx_turns_chat_sequence"),
+            ("turns", "idx_turns_parent"),
+            ("attachments", "idx_attachments_turn"),
+            ("recent_workspaces", "idx_recent_workspaces_last_opened"),
+        ] {
+            assert!(
+                indexes
+                    .iter()
+                    .any(|(table, index)| table == expected.0 && index == expected.1),
+                "missing index {expected:?}, found {indexes:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn open_on_disk_round_trips_through_a_real_file() {
         let migrations = fixture_migrations_with_initial();
         let dir = TempDir::new().expect("tempdir for db");
