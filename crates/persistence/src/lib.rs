@@ -60,6 +60,7 @@
 
 pub mod attachment;
 pub mod chat;
+pub mod data_dirs;
 pub mod db;
 pub mod migration;
 pub mod permission;
@@ -71,6 +72,7 @@ pub mod workspace;
 
 pub use attachment::SqliteAttachmentStore;
 pub use chat::SqliteChatRepository;
+pub use data_dirs::DataDirs;
 pub use db::Database;
 pub use migration::MigrationRunner;
 pub use permission::SqlitePermissionGrantStore;
