@@ -182,51 +182,33 @@ assert_impl_all!(dyn SessionRepository: Send, Sync);
 /// index can be updated transactionally next to the row.
 #[async_trait]
 pub trait ChatRepository: Send + Sync {
-    /// Create or update a chat record.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PersistenceError`] when the underlying store
-    /// rejects the write.
-    async fn upsert(&self, chat: &Conversation) -> Result<(), PersistenceError>;
+    /// Create or update a chat record inside a workspace.
+    async fn upsert(
+        &self,
+        workspace_id: WorkspaceId,
+        chat: &Conversation,
+    ) -> Result<(), PersistenceError>;
 
     /// Fetch a chat by id.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PersistenceError`] when the underlying store
-    /// cannot be read.
     async fn get(&self, id: ChatId) -> Result<Option<Conversation>, PersistenceError>;
 
-    /// Remove a chat by id. Idempotent.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PersistenceError`] when the underlying store
-    /// rejects the delete.
+    /// Remove a chat by id.
     async fn delete(&self, id: ChatId) -> Result<(), PersistenceError>;
 
-    /// Enumerate every chat inside a session, ordered by most-recent
-    /// turn first.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PersistenceError`] when the underlying store
-    /// cannot be enumerated.
-    async fn list_for_session(
+    /// Enumerate every chat inside a workspace.
+    async fn list_by_workspace(
         &self,
-        session_id: SessionId,
+        workspace_id: WorkspaceId,
     ) -> Result<Vec<Conversation>, PersistenceError>;
 
-    /// Full-text search inside a workspace's chats. Backed by FTS5
-    /// once the impl lands; this trait surface stays a flat
-    /// `query → matching chat ids` so callers do not depend on the
-    /// indexer choice.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PersistenceError`] when the underlying index
-    /// cannot be queried.
+    /// Move the chat head pointer to an existing turn, or clear it with `None`.
+    async fn set_head_turn(
+        &self,
+        chat_id: ChatId,
+        turn_id: Option<TurnId>,
+    ) -> Result<(), PersistenceError>;
+
+    /// Full-text search inside a workspace's chats.
     async fn search(
         &self,
         workspace_id: WorkspaceId,
