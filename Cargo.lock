@@ -1208,10 +1208,13 @@ dependencies = [
 name = "openspace-theme"
 version = "0.1.0"
 dependencies = [
+ "notify",
  "serde",
  "static_assertions",
  "thiserror 1.0.69",
+ "tokio",
  "toml",
+ "tracing",
 ]
 
 [[package]]
