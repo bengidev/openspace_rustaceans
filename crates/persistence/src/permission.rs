@@ -7,7 +7,7 @@ use openspace_shared::persistence::{PermissionGrantStore, PersistenceError};
 use rusqlite::{params, OptionalExtension};
 use uuid::Uuid;
 
-use crate::sql::{id_to_string, map_sql_error, ts_to_datetime};
+use crate::sql::{id_to_string, map_sql_error, ts_to_datetime, write_transaction};
 use crate::Database;
 
 /// SQLite implementation of [`PermissionGrantStore`].
@@ -28,22 +28,24 @@ impl SqlitePermissionGrantStore {
 impl PermissionGrantStore for SqlitePermissionGrantStore {
     async fn upsert(&self, grant: &PermissionGrant) -> Result<(), PersistenceError> {
         let row = PermissionGrantRow::from_grant(grant)?;
-        self.db
-            .connection()
-            .call(move |conn| {
-                // The schema keys grants by workspace/tool/pattern. Re-recording the same
-                // tuple refreshes `granted_at`; it never creates a duplicate row.
-                conn.execute(
-                    "INSERT INTO permission_grants (workspace_id, tool_id, network_pattern, granted_at)
+        write_transaction(&self.db, move |tx| {
+            // The schema keys grants by workspace/tool/pattern. Re-recording the same
+            // tuple refreshes `granted_at`; it never creates a duplicate row.
+            tx.execute(
+                "INSERT INTO permission_grants (workspace_id, tool_id, network_pattern, granted_at)
                      VALUES (?1, ?2, ?3, ?4)
                      ON CONFLICT(workspace_id, tool_id, network_pattern) DO UPDATE SET
                         granted_at = excluded.granted_at",
-                    params![row.workspace_id, row.tool_id, row.network_pattern, row.granted_at],
-                )?;
-                Ok(())
-            })
-            .await
-            .map_err(map_sql_error)
+                params![
+                    row.workspace_id,
+                    row.tool_id,
+                    row.network_pattern,
+                    row.granted_at
+                ],
+            )?;
+            Ok(())
+        })
+        .await
     }
 
     async fn get(
@@ -61,7 +63,7 @@ impl PermissionGrantStore for SqlitePermissionGrantStore {
                      WHERE network_pattern = ?1
                      ORDER BY granted_at DESC
                      LIMIT 1",
-                        [network_pattern],
+                        [network_pattern.clone()],
                         permission_grant_from_row,
                     )
                     .optional()?)
@@ -72,17 +74,14 @@ impl PermissionGrantStore for SqlitePermissionGrantStore {
 
     async fn delete(&self, id: PermissionGrantId) -> Result<(), PersistenceError> {
         let network_pattern = id_to_string!(id);
-        self.db
-            .connection()
-            .call(move |conn| {
-                conn.execute(
-                    "DELETE FROM permission_grants WHERE network_pattern = ?1",
-                    [network_pattern],
-                )?;
-                Ok(())
-            })
-            .await
-            .map_err(map_sql_error)
+        write_transaction(&self.db, move |tx| {
+            tx.execute(
+                "DELETE FROM permission_grants WHERE network_pattern = ?1",
+                [network_pattern.clone()],
+            )?;
+            Ok(())
+        })
+        .await
     }
 
     async fn list_for_workspace(

@@ -7,7 +7,7 @@ use openspace_shared::persistence::{AttachmentStore, PersistenceError};
 use rusqlite::{params, OptionalExtension};
 use uuid::Uuid;
 
-use crate::sql::{id_to_string, map_sql_error, not_found, ts_to_datetime};
+use crate::sql::{id_to_string, map_sql_error, not_found, ts_to_datetime, write_transaction};
 use crate::Database;
 
 /// SQLite implementation of [`AttachmentStore`].
@@ -34,24 +34,21 @@ impl AttachmentStore for SqliteAttachmentStore {
         let mime = metadata.mime_type.clone();
         let bytes = bytes.to_vec();
         let created_at = metadata.created_at.timestamp();
-        self.db
-            .connection()
-            .call(move |conn| {
-                conn.execute(
-                    "INSERT INTO attachments (id, turn_id, kind, mime, data_blob, created_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-                     ON CONFLICT(id) DO UPDATE SET
-                        turn_id = excluded.turn_id,
-                        kind = excluded.kind,
-                        mime = excluded.mime,
-                        data_blob = excluded.data_blob,
-                        created_at = excluded.created_at",
-                    params![id, turn_id, metadata_json, mime, bytes, created_at],
-                )?;
-                Ok(())
-            })
-            .await
-            .map_err(map_sql_error)
+        write_transaction(&self.db, move |tx| {
+            tx.execute(
+                "INSERT INTO attachments (id, turn_id, kind, mime, data_blob, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(id) DO UPDATE SET
+                    turn_id = excluded.turn_id,
+                    kind = excluded.kind,
+                    mime = excluded.mime,
+                    data_blob = excluded.data_blob,
+                    created_at = excluded.created_at",
+                params![id, turn_id, metadata_json, mime, bytes, created_at],
+            )?;
+            Ok(())
+        })
+        .await
     }
 
     async fn get_metadata(&self, id: AttachmentId) -> Result<Option<Attachment>, PersistenceError> {
@@ -90,14 +87,11 @@ impl AttachmentStore for SqliteAttachmentStore {
 
     async fn delete(&self, id: AttachmentId) -> Result<(), PersistenceError> {
         let id = id_to_string!(id);
-        self.db
-            .connection()
-            .call(move |conn| {
-                conn.execute("DELETE FROM attachments WHERE id = ?1", [id])?;
-                Ok(())
-            })
-            .await
-            .map_err(map_sql_error)
+        write_transaction(&self.db, move |tx| {
+            tx.execute("DELETE FROM attachments WHERE id = ?1", [id.clone()])?;
+            Ok(())
+        })
+        .await
     }
 
     async fn list_for_chat(&self, chat_id: ChatId) -> Result<Vec<Attachment>, PersistenceError> {
