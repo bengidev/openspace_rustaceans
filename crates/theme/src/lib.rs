@@ -1,5 +1,7 @@
 //! Theme domain model, TOML parser, validation, bundled themes.
 
+pub mod iced_bridge;
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt, fs,

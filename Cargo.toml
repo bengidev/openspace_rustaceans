@@ -147,6 +147,7 @@ directories = "5"
 clap = { version = "4", features = ["derive"] }
 # `assert_cmd` is dev-only test glue for smoke-testing workspace binaries.
 assert_cmd = "2"
+iced = { version = "0.14", default-features = false, features = ["thread-pool", "x11", "wayland"] }
 
 # Release profile tuned for distributable binaries: full optimisation,
 # thin LTO, single codegen unit, stripped symbols, abort on panic. The
