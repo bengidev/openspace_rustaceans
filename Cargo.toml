@@ -141,6 +141,11 @@ notify = "6"
 # paths. Pinned at the workspace level so all filesystem entry points
 # share the same OS mapping semantics.
 directories = "5"
+# `clap` powers dev-helper command parsing for workspace binaries;
+# keep it pinned here so local tooling shares one CLI parser version.
+clap = { version = "4", features = ["derive"] }
+# `assert_cmd` is dev-only test glue for smoke-testing workspace binaries.
+assert_cmd = "2"
 
 # Release profile tuned for distributable binaries: full optimisation,
 # thin LTO, single codegen unit, stripped symbols, abort on panic. The
