@@ -65,6 +65,7 @@ toml = { workspace = true }
 # downstream slices in this crate will, and pulling the workspace
 # pin once keeps the surface stable).
 serde = { workspace = true }
+serde_json = { workspace = true }
 
 # `tracing` is used to emit a structured event when the atomic write
 # fails partway through so operators have a breadcrumb trail without

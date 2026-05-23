@@ -58,17 +58,23 @@
 
 #![forbid(unsafe_code)]
 
+pub mod attachment;
 pub mod chat;
 pub mod db;
 pub mod migration;
+pub mod permission;
 pub mod session;
 pub mod settings_store;
 mod sql;
+pub mod turn;
 pub mod workspace;
 
+pub use attachment::SqliteAttachmentStore;
 pub use chat::SqliteChatRepository;
 pub use db::Database;
 pub use migration::MigrationRunner;
+pub use permission::SqlitePermissionGrantStore;
 pub use session::SqliteSessionRepository;
 pub use settings_store::SettingsStore;
+pub use turn::SqliteTurnRepository;
 pub use workspace::{SqliteRecentWorkspacesRepository, SqliteWorkspaceRepository};
