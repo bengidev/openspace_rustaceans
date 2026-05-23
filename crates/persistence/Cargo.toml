@@ -121,11 +121,16 @@ chrono = { workspace = true }
 # Domain id newtypes.
 uuid = { workspace = true }
 
+# `clap` parses the developer-only migration helper binary.
+clap = { workspace = true }
+
 [dev-dependencies]
 # `tempfile` provides isolated scratch directories for the
 # `SettingsStore` tests — each test owns its own tempdir that is
 # cleaned up regardless of pass / fail.
 tempfile = { workspace = true }
+# `assert_cmd` invokes the migration helper binary in smoke tests.
+assert_cmd = { workspace = true }
 # Tests need extra tokio surface (`rt-multi-thread`, `time`) that
 # production code does not — `#[tokio::test(flavor = "multi_thread")]`
 # is what exercises the `spawn_blocking` path in the atomic-write

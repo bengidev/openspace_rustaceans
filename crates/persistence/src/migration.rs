@@ -164,18 +164,41 @@ impl<'a> MigrationRunner<'a> {
     pub fn run(&mut self) -> Result<(), PersistenceError> {
         ensure_meta_table(self.conn)?;
         let current = read_schema_version(self.conn)?;
-        let highest_known = self.migrations.last().map(|m| m.version).unwrap_or(0);
-
-        if current > highest_known {
-            return Err(PersistenceError::SchemaVersionMismatch(format!(
-                "database at version {current}, highest known migration is {highest_known}"
-            )));
-        }
+        self.ensure_not_newer_than_known(current)?;
 
         for migration in self.migrations.iter().filter(|m| m.version > current) {
             apply_migration(self.conn, migration)?;
         }
 
+        Ok(())
+    }
+
+    /// Read the current database schema version without applying migrations.
+    pub fn current_version(&mut self) -> Result<i64, PersistenceError> {
+        ensure_meta_table(self.conn)?;
+        let current = read_schema_version(self.conn)?;
+        self.ensure_not_newer_than_known(current)?;
+        Ok(current)
+    }
+
+    /// Return migrations not yet applied to the connected database.
+    pub fn pending_migrations(&mut self) -> Result<Vec<(i64, String)>, PersistenceError> {
+        let current = self.current_version()?;
+        Ok(self
+            .migrations
+            .iter()
+            .filter(|migration| migration.version > current)
+            .map(|migration| (migration.version, migration.file_name.clone()))
+            .collect())
+    }
+
+    fn ensure_not_newer_than_known(&self, current: i64) -> Result<(), PersistenceError> {
+        let highest_known = self.migrations.last().map(|m| m.version).unwrap_or(0);
+        if current > highest_known {
+            return Err(PersistenceError::SchemaVersionMismatch(format!(
+                "database at version {current}, highest known migration is {highest_known}"
+            )));
+        }
         Ok(())
     }
 }
