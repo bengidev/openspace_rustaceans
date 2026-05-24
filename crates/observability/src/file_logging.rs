@@ -30,7 +30,13 @@ pub fn init_file_logging(data_dir: impl AsRef<Path>) -> io::Result<FileLoggingGu
 
     tracing_subscriber::registry()
         .with(filter)
-        .with(tracing_subscriber::fmt::layer().with_writer(writer.clone()))
+        .with(
+            tracing_subscriber::fmt::layer()
+                .json()
+                .with_current_span(true)
+                .with_span_list(true)
+                .with_writer(writer.clone()),
+        )
         .try_init()
         .map_err(|err| io::Error::new(io::ErrorKind::AlreadyExists, err))?;
 
