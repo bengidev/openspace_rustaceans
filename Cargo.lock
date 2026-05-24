@@ -2584,6 +2584,14 @@ name = "openspace-feature-welcome"
 version = "0.1.0"
 
 [[package]]
+name = "openspace-observability"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "tokio",
+]
+
+[[package]]
 name = "openspace-persistence"
 version = "0.1.0"
 dependencies = [
