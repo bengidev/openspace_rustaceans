@@ -8,6 +8,7 @@ use std::{
 use chrono::{DateTime, Utc};
 use tokio::sync::broadcast;
 
+pub mod file_logging;
 pub mod notify;
 
 pub const DEFAULT_ERROR_LOG_CAPACITY: usize = 1_000;
