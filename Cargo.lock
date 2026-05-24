@@ -2208,6 +2208,9 @@ dependencies = [
 [[package]]
 name = "openspace-app"
 version = "0.1.0"
+dependencies = [
+ "iced",
+]
 
 [[package]]
 name = "openspace-feature-chat"
@@ -2220,10 +2223,16 @@ version = "0.1.0"
 [[package]]
 name = "openspace-feature-terminal"
 version = "0.1.0"
+dependencies = [
+ "iced",
+]
 
 [[package]]
 name = "openspace-feature-text-editor"
 version = "0.1.0"
+dependencies = [
+ "iced",
+]
 
 [[package]]
 name = "openspace-feature-welcome"

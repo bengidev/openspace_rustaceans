@@ -14,5 +14,8 @@ description = "OpenSpace desktop shell binary."
 name = "openspace"
 path = "src/main.rs"
 
+[dependencies]
+iced = { workspace = true }
+
 [lints]
 workspace = true

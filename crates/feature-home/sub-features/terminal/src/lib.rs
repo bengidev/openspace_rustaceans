@@ -4,10 +4,15 @@
 //! Implementation lives in later slices; this skeleton exists so the
 //! workspace builds and tests run.
 
-pub mod placeholder {}
+/// Default terminal text font.
+pub const DEFAULT_FONT: iced::Font = iced::Font::with_name("JetBrains Mono");
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
-    fn smoke() {}
+    fn default_font_uses_bundled_monospace_family() {
+        assert_eq!(DEFAULT_FONT, iced::Font::with_name("JetBrains Mono"));
+    }
 }
