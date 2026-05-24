@@ -44,6 +44,12 @@ impl DataDirs {
         Ok(dirs)
     }
 
+    /// Path to the data root.
+    #[must_use]
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     /// Path to `settings.toml`; file is not created by this type.
     #[must_use]
     pub fn settings_toml(&self) -> PathBuf {
