@@ -142,6 +142,11 @@ notify = "6"
 # paths. Pinned at the workspace level so all filesystem entry points
 # share the same OS mapping semantics.
 directories = "5"
+# `dark-light` detects the host OS light/dark preference for
+# follow-system theme mode. The shared settings domain wraps it behind a
+# mockable source plus a polling fallback so UI code can subscribe to
+# appearance changes without platform-specific branches.
+dark-light = "2"
 # `clap` powers dev-helper command parsing for workspace binaries;
 # keep it pinned here so local tooling shares one CLI parser version.
 clap = { version = "4", features = ["derive"] }

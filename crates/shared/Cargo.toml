@@ -37,6 +37,7 @@ async-trait = { workspace = true }
 # the `Stream`/`StreamExt` traits downstream crates will consume to
 # drive the agent loop.
 futures = { workspace = true }
+dark-light = { workspace = true }
 
 [dev-dependencies]
 # `serde_json` is also a runtime dep, but listing it as a dev-dep in
