@@ -118,8 +118,8 @@ impl ErrorLog {
     pub fn filter(&self, severity: Option<Severity>, source: Option<&str>) -> Vec<Notification> {
         self.entries
             .iter()
-            .filter(|event| severity.map_or(true, |expected| event.severity == expected))
-            .filter(|event| source.map_or(true, |expected| event.source == expected))
+            .filter(|event| severity.is_none_or(|expected| event.severity == expected))
+            .filter(|event| source.is_none_or(|expected| event.source == expected))
             .cloned()
             .collect()
     }
