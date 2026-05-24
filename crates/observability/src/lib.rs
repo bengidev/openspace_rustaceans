@@ -10,6 +10,7 @@ use tokio::sync::broadcast;
 
 pub mod file_logging;
 pub mod notify;
+pub mod tracing_support;
 
 pub const DEFAULT_ERROR_LOG_CAPACITY: usize = 1_000;
 const DEFAULT_SUBSCRIBER_CAPACITY: usize = 1_000;
