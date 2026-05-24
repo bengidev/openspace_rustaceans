@@ -1,0 +1,248 @@
+//! Notification spine and in-memory error log.
+
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex},
+};
+
+use chrono::{DateTime, Utc};
+use tokio::sync::broadcast;
+
+pub mod notify;
+
+pub const DEFAULT_ERROR_LOG_CAPACITY: usize = 1_000;
+const DEFAULT_SUBSCRIBER_CAPACITY: usize = 1_000;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub enum Severity {
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum UiSurface {
+    Passive,
+    Toast,
+    Modal,
+    Blocking,
+}
+
+impl Severity {
+    #[must_use]
+    pub const fn ui_surface(self) -> UiSurface {
+        match self {
+            Self::Low => UiSurface::Passive,
+            Self::Medium => UiSurface::Toast,
+            Self::High => UiSurface::Modal,
+            Self::Critical => UiSurface::Blocking,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Notification {
+    pub severity: Severity,
+    pub source: String,
+    pub message: String,
+    pub timestamp: DateTime<Utc>,
+    pub surface: UiSurface,
+}
+
+impl Notification {
+    #[must_use]
+    pub fn new(severity: Severity, source: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            severity,
+            source: source.into(),
+            message: message.into(),
+            timestamp: Utc::now(),
+            surface: severity.ui_surface(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ErrorLog {
+    entries: VecDeque<Notification>,
+    capacity: usize,
+}
+
+impl Default for ErrorLog {
+    fn default() -> Self {
+        Self::with_capacity(DEFAULT_ERROR_LOG_CAPACITY)
+    }
+}
+
+impl ErrorLog {
+    #[must_use]
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            entries: VecDeque::with_capacity(capacity),
+            capacity,
+        }
+    }
+
+    pub fn record(&mut self, event: Notification) {
+        if self.capacity == 0 {
+            return;
+        }
+        if self.entries.len() == self.capacity {
+            self.entries.pop_front();
+        }
+        self.entries.push_back(event);
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    #[must_use]
+    pub const fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    #[must_use]
+    pub fn entries(&self) -> Vec<Notification> {
+        self.entries.iter().cloned().collect()
+    }
+
+    #[must_use]
+    pub fn filter(&self, severity: Option<Severity>, source: Option<&str>) -> Vec<Notification> {
+        self.entries
+            .iter()
+            .filter(|event| severity.is_none_or(|expected| event.severity == expected))
+            .filter(|event| source.is_none_or(|expected| event.source == expected))
+            .cloned()
+            .collect()
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Observability {
+    log: Arc<Mutex<ErrorLog>>,
+    sender: broadcast::Sender<Notification>,
+}
+
+impl Default for Observability {
+    fn default() -> Self {
+        Self::new(DEFAULT_ERROR_LOG_CAPACITY)
+    }
+}
+
+impl Observability {
+    #[must_use]
+    pub fn new(log_capacity: usize) -> Self {
+        let (sender, _) = broadcast::channel(DEFAULT_SUBSCRIBER_CAPACITY);
+        Self {
+            log: Arc::new(Mutex::new(ErrorLog::with_capacity(log_capacity))),
+            sender,
+        }
+    }
+
+    pub fn emit(
+        &self,
+        severity: Severity,
+        source: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Notification {
+        let event = Notification::new(severity, source, message);
+        self.record(event.clone());
+        event
+    }
+
+    pub fn record(&self, event: Notification) {
+        self.log
+            .lock()
+            .expect("error log mutex poisoned")
+            .record(event.clone());
+        let _ = self.sender.send(event);
+    }
+
+    #[must_use]
+    pub fn subscribe(&self) -> broadcast::Receiver<Notification> {
+        self.sender.subscribe()
+    }
+
+    #[must_use]
+    pub fn log(&self) -> ErrorLog {
+        self.log.lock().expect("error log mutex poisoned").clone()
+    }
+}
+
+pub use tokio::sync::broadcast::Receiver as NotificationStream;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_error_log_capacity_is_1000() {
+        assert_eq!(ErrorLog::default().capacity(), DEFAULT_ERROR_LOG_CAPACITY);
+    }
+
+    #[test]
+    fn ring_buffer_drops_oldest_entry() {
+        let mut log = ErrorLog::with_capacity(2);
+        log.record(Notification::new(Severity::Low, "one", "oldest"));
+        log.record(Notification::new(Severity::Medium, "two", "middle"));
+        log.record(Notification::new(Severity::High, "three", "newest"));
+
+        let messages: Vec<_> = log
+            .entries()
+            .into_iter()
+            .map(|event| event.message)
+            .collect();
+        assert_eq!(messages, ["middle", "newest"]);
+    }
+
+    #[test]
+    fn filters_by_severity_and_source() {
+        let mut log = ErrorLog::with_capacity(10);
+        log.record(Notification::new(Severity::Low, "ui", "hint"));
+        log.record(Notification::new(Severity::High, "network", "down"));
+        log.record(Notification::new(Severity::High, "ui", "blocked"));
+
+        assert_eq!(log.filter(Some(Severity::High), None).len(), 2);
+        assert_eq!(log.filter(None, Some("ui")).len(), 2);
+        assert_eq!(
+            log.filter(Some(Severity::High), Some("ui"))[0].message,
+            "blocked"
+        );
+    }
+
+    #[test]
+    fn severity_routes_to_expected_surfaces() {
+        assert_eq!(Severity::Low.ui_surface(), UiSurface::Passive);
+        assert_eq!(Severity::Medium.ui_surface(), UiSurface::Toast);
+        assert_eq!(Severity::High.ui_surface(), UiSurface::Modal);
+        assert_eq!(Severity::Critical.ui_surface(), UiSurface::Blocking);
+    }
+
+    #[tokio::test]
+    async fn subscribers_receive_new_notifications() {
+        let observability = Observability::default();
+        let mut subscriber = observability.subscribe();
+
+        let emitted = observability.emit(Severity::Critical, "runtime", "boom");
+        let received = subscriber.recv().await.expect("notification delivered");
+
+        assert_eq!(received, emitted);
+    }
+
+    #[test]
+    fn emit_records_event_with_surface() {
+        let observability = Observability::default();
+        let emitted = observability.emit(Severity::Medium, "settings", "saved");
+
+        assert_eq!(emitted.surface, UiSurface::Toast);
+        assert_eq!(observability.log().entries(), [emitted]);
+    }
+}
