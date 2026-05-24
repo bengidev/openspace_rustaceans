@@ -1,29 +1,38 @@
 use std::{
     collections::VecDeque,
     env, fs,
-    io::{self, Write},
+    fs::File,
+    io::{self, BufWriter, Write},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use regex::Regex;
+use tracing_flame::{FlameLayer, FlushGuard};
 use tracing_subscriber::{
-    fmt::MakeWriter, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter,
+    fmt::MakeWriter, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Registry,
 };
 
 pub const LOG_RETENTION_DAYS: i64 = 14;
 pub const RECENT_LOG_LINE_CAPACITY: usize = 200;
+pub const FLAME_ENV: &str = "OPENSPACE_FLAME";
+pub const FLAME_FILENAME: &str = "flame.folded";
 const LOG_PREFIX: &str = "openspace-";
 const LOG_SUFFIX: &str = ".log";
+
+type FlameFileLayer = FlameLayer<Registry, BufWriter<File>>;
+type FlameFileGuard = FlushGuard<BufWriter<File>>;
 
 #[derive(Debug)]
 pub struct FileLoggingGuard {
     _writer: SharedRedactingDailyWriter,
+    _flame_guard: Option<FlameFileGuard>,
 }
 
 pub fn init_file_logging(data_dir: impl AsRef<Path>) -> io::Result<FileLoggingGuard> {
-    let log_dir = data_dir.as_ref().join("logs");
+    let data_dir = data_dir.as_ref();
+    let log_dir = data_dir.join("logs");
     prune_old_logs(&log_dir, Utc::now())?;
 
     let writer = SharedRedactingDailyWriter::new(RedactingDailyWriter::new(log_dir));
@@ -31,19 +40,39 @@ pub fn init_file_logging(data_dir: impl AsRef<Path>) -> io::Result<FileLoggingGu
     let filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_filter()));
 
-    tracing_subscriber::registry()
+    let fmt_layer = tracing_subscriber::fmt::layer()
+        .json()
+        .with_current_span(true)
+        .with_span_list(true)
+        .with_writer(writer.clone());
+    let (flame_layer, flame_guard) = flame_layer(data_dir)?;
+
+    Registry::default()
+        .with(flame_layer)
         .with(filter)
-        .with(
-            tracing_subscriber::fmt::layer()
-                .json()
-                .with_current_span(true)
-                .with_span_list(true)
-                .with_writer(writer.clone()),
-        )
+        .with(fmt_layer)
         .try_init()
         .map_err(|err| io::Error::new(io::ErrorKind::AlreadyExists, err))?;
 
-    Ok(FileLoggingGuard { _writer: writer })
+    Ok(FileLoggingGuard {
+        _writer: writer,
+        _flame_guard: flame_guard,
+    })
+}
+
+fn flame_layer(data_dir: &Path) -> io::Result<(Option<FlameFileLayer>, Option<FlameFileGuard>)> {
+    if !flame_enabled() {
+        return Ok((None, None));
+    }
+
+    let flame_path = data_dir.join(FLAME_FILENAME);
+    let (layer, guard) =
+        FlameLayer::with_file(&flame_path).map_err(|err| io::Error::other(err.to_string()))?;
+    Ok((Some(layer), Some(guard)))
+}
+
+fn flame_enabled() -> bool {
+    env::var_os(FLAME_ENV).is_some_and(|value| value == "1")
 }
 
 #[must_use]
@@ -253,7 +282,9 @@ fn _rust_log_present() -> bool {
 mod tests {
     use super::*;
     use proptest::prelude::*;
-    use std::fs;
+    use std::{fs, sync::Mutex};
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn redacts_sensitive_fixtures() {
@@ -319,6 +350,47 @@ mod tests {
             fs::read_to_string(temp.path().join("openspace-2025-02-01.log")).expect("feb"),
             "second"
         );
+    }
+
+    #[test]
+    fn flame_layer_disabled_when_env_unset() {
+        let _lock = ENV_LOCK.lock().expect("env lock");
+        env::remove_var(FLAME_ENV);
+        let temp = tempfile::tempdir().expect("tempdir");
+
+        let (layer, guard) = flame_layer(temp.path()).expect("flame layer");
+
+        assert!(layer.is_none());
+        assert!(guard.is_none());
+        assert!(!temp.path().join(FLAME_FILENAME).exists());
+    }
+
+    #[test]
+    fn flame_layer_enabled_by_env_writes_folded_file() {
+        let _lock = ENV_LOCK.lock().expect("env lock");
+        env::set_var(FLAME_ENV, "1");
+        let temp = tempfile::tempdir().expect("tempdir");
+
+        let (layer, guard) = flame_layer(temp.path()).expect("flame layer");
+
+        assert!(layer.is_some());
+        assert!(guard.is_some());
+        assert!(temp.path().join(FLAME_FILENAME).exists());
+        env::remove_var(FLAME_ENV);
+    }
+
+    #[test]
+    fn flame_layer_ignores_non_one_env_values() {
+        let _lock = ENV_LOCK.lock().expect("env lock");
+        env::set_var(FLAME_ENV, "true");
+        let temp = tempfile::tempdir().expect("tempdir");
+
+        let (layer, guard) = flame_layer(temp.path()).expect("flame layer");
+
+        assert!(layer.is_none());
+        assert!(guard.is_none());
+        assert!(!temp.path().join(FLAME_FILENAME).exists());
+        env::remove_var(FLAME_ENV);
     }
 
     #[test]
