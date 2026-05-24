@@ -932,6 +932,91 @@ mod tests {
         assert_eq!(tool.safety_class(), SafetyClass::Safe);
     }
 
+    #[test]
+    fn default_retry_policy_uses_three_step_exponential_backoff() {
+        let policy = RetryPolicy::default();
+        assert_eq!(policy.max_transient_attempts, 3);
+        assert_eq!(
+            policy.transient_backoff,
+            vec![
+                std::time::Duration::from_millis(500),
+                std::time::Duration::from_secs(1),
+                std::time::Duration::from_secs(2),
+            ]
+        );
+    }
+
+    #[test]
+    fn retry_classifier_maps_tool_error_kinds() {
+        let classifier = DefaultToolErrorClassifier;
+        let cases = [
+            (ToolErrorKind::Io, ToolFailureKind::Transient),
+            (ToolErrorKind::InvalidArgs, ToolFailureKind::Permanent),
+            (ToolErrorKind::Internal, ToolFailureKind::Permanent),
+            (
+                ToolErrorKind::SandboxBlocked,
+                ToolFailureKind::PermissionDenied,
+            ),
+            (
+                ToolErrorKind::PermissionDenied,
+                ToolFailureKind::PermissionDenied,
+            ),
+            (ToolErrorKind::Cancelled, ToolFailureKind::Cancelled),
+        ];
+
+        for (kind, expected) in cases {
+            let error = ToolError::new(kind, "boom");
+            assert_eq!(classifier.classify(&error), expected);
+        }
+    }
+
+    #[test]
+    fn retry_policy_matrix_covers_count_backoff_and_decision() {
+        let policy = RetryPolicy::default();
+        let cases = [
+            (
+                ToolFailureKind::Transient,
+                1,
+                RetryDecision::Retry {
+                    backoff: std::time::Duration::from_millis(500),
+                },
+            ),
+            (
+                ToolFailureKind::Transient,
+                2,
+                RetryDecision::Retry {
+                    backoff: std::time::Duration::from_secs(1),
+                },
+            ),
+            (ToolFailureKind::Transient, 3, RetryDecision::Surface),
+            (ToolFailureKind::Permanent, 1, RetryDecision::Surface),
+            (ToolFailureKind::PermissionDenied, 1, RetryDecision::Surface),
+            (
+                ToolFailureKind::Cancelled,
+                1,
+                RetryDecision::PropagateCancellation,
+            ),
+        ];
+
+        for (kind, attempts, expected) in cases {
+            assert_eq!(policy.decide(kind, attempts), expected);
+        }
+    }
+
+    #[test]
+    fn decide_for_error_classifies_then_applies_policy() {
+        let policy = RetryPolicy::default();
+        let classifier = DefaultToolErrorClassifier;
+        let err = ToolError::new(ToolErrorKind::Io, "temporary failure");
+
+        assert_eq!(
+            policy.decide_for_error(&classifier, &err, 2),
+            RetryDecision::Retry {
+                backoff: std::time::Duration::from_secs(1),
+            }
+        );
+    }
+
     /// `ToolErrorKind` is `#[non_exhaustive]`. Lock the wildcard-arm
     /// contract the same way the AI-stream tests do.
     #[test]
@@ -941,6 +1026,7 @@ mod tests {
             ToolErrorKind::SandboxBlocked,
             ToolErrorKind::Cancelled,
             ToolErrorKind::Io,
+            ToolErrorKind::PermissionDenied,
             ToolErrorKind::Internal,
         ];
         for k in kinds {
@@ -950,12 +1036,13 @@ mod tests {
                 ToolErrorKind::SandboxBlocked => "sandbox",
                 ToolErrorKind::Cancelled => "cancel",
                 ToolErrorKind::Io => "io",
+                ToolErrorKind::PermissionDenied => "permission",
                 ToolErrorKind::Internal => "internal",
                 _ => "unknown",
             };
             assert!(matches!(
                 label,
-                "args" | "sandbox" | "cancel" | "io" | "internal"
+                "args" | "sandbox" | "cancel" | "io" | "permission" | "internal"
             ));
         }
     }
