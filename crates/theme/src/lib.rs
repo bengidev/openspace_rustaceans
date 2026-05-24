@@ -20,7 +20,19 @@ use tracing::warn;
 pub const REQUIRED_UI_TOKENS: &[&str] =
     &["background", "foreground", "accent", "surface", "border"];
 pub const REQUIRED_SYNTAX_TOKENS: &[&str] = &[
-    "keyword", "string", "comment", "number", "function", "type", "variable", "operator",
+    "keyword",
+    "function",
+    "string",
+    "comment",
+    "number",
+    "type",
+    "variable",
+    "constant",
+    "property",
+    "operator",
+    "punctuation",
+    "tag",
+    "attribute",
 ];
 pub const REQUIRED_TERMINAL_TOKENS: &[&str] = &[
     "black",
@@ -39,6 +51,8 @@ pub const REQUIRED_TERMINAL_TOKENS: &[&str] = &[
     "bright_magenta",
     "bright_cyan",
     "bright_white",
+    "cursor",
+    "selection_background",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -212,7 +226,12 @@ pub struct SyntaxTokens {
     pub function: Color,
     pub r#type: Color,
     pub variable: Color,
+    pub constant: Color,
+    pub property: Color,
     pub operator: Color,
+    pub punctuation: Color,
+    pub tag: Color,
+    pub attribute: Color,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalPalette {
@@ -232,6 +251,8 @@ pub struct TerminalPalette {
     pub bright_magenta: Color,
     pub bright_cyan: Color,
     pub bright_white: Color,
+    pub cursor: Color,
+    pub selection_background: Color,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ThemeMetadata {
@@ -247,6 +268,40 @@ pub struct Theme {
     pub ui: UiTokens,
     pub syntax: SyntaxTokens,
     pub terminal: TerminalPalette,
+}
+
+impl Theme {
+    #[must_use]
+    pub fn syntax_highlight(&self, name: &str) -> Color {
+        resolve_syntax_highlight(&self.syntax, self.ui.foreground, name)
+    }
+
+    #[must_use]
+    pub fn terminal_palette(&self) -> &TerminalPalette {
+        &self.terminal
+    }
+}
+
+#[must_use]
+pub fn resolve_syntax_highlight(tokens: &SyntaxTokens, fallback: Color, name: &str) -> Color {
+    let normalized = name.strip_prefix('@').unwrap_or(name);
+    let head = normalized.split('.').next().unwrap_or(normalized);
+    match head {
+        "keyword" => tokens.keyword,
+        "function" | "method" => tokens.function,
+        "string" => tokens.string,
+        "comment" => tokens.comment,
+        "number" | "float" => tokens.number,
+        "type" => tokens.r#type,
+        "variable" | "parameter" => tokens.variable,
+        "constant" | "boolean" => tokens.constant,
+        "property" | "field" => tokens.property,
+        "operator" => tokens.operator,
+        "punctuation" => tokens.punctuation,
+        "tag" => tokens.tag,
+        "attribute" => tokens.attribute,
+        _ => fallback,
+    }
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -661,6 +716,68 @@ mod tests {
         assert_eq!(parsed.len(), 6);
         for theme in parsed {
             theme.unwrap();
+        }
+    }
+    #[test]
+    fn syntax_highlight_resolves_known_names_and_unknown_fallback() {
+        let theme = ThemeFile::parse(VALID).unwrap();
+
+        assert_eq!(theme.syntax_highlight("keyword"), theme.syntax.keyword);
+        assert_eq!(
+            theme.syntax_highlight("@function.call"),
+            theme.syntax.function
+        );
+        assert_eq!(theme.syntax_highlight("string"), theme.syntax.string);
+        assert_eq!(theme.syntax_highlight("comment"), theme.syntax.comment);
+        assert_eq!(theme.syntax_highlight("number"), theme.syntax.number);
+        assert_eq!(theme.syntax_highlight("type.builtin"), theme.syntax.r#type);
+        assert_eq!(
+            theme.syntax_highlight("variable.parameter"),
+            theme.syntax.variable
+        );
+        assert_eq!(
+            theme.syntax_highlight("constant.builtin"),
+            theme.syntax.constant
+        );
+        assert_eq!(theme.syntax_highlight("property"), theme.syntax.property);
+        assert_eq!(theme.syntax_highlight("operator"), theme.syntax.operator);
+        assert_eq!(
+            theme.syntax_highlight("punctuation.bracket"),
+            theme.syntax.punctuation
+        );
+        assert_eq!(theme.syntax_highlight("tag"), theme.syntax.tag);
+        assert_eq!(theme.syntax_highlight("attribute"), theme.syntax.attribute);
+        assert_eq!(
+            theme.syntax_highlight("markup.heading"),
+            theme.ui.foreground
+        );
+    }
+    #[test]
+    fn terminal_palette_exposes_required_slots_for_bundled_themes() {
+        for theme in bundled_themes() {
+            let theme = theme.unwrap();
+            let palette = theme.terminal_palette();
+            let slots = [
+                palette.black,
+                palette.red,
+                palette.green,
+                palette.yellow,
+                palette.blue,
+                palette.magenta,
+                palette.cyan,
+                palette.white,
+                palette.bright_black,
+                palette.bright_red,
+                palette.bright_green,
+                palette.bright_yellow,
+                palette.bright_blue,
+                palette.bright_magenta,
+                palette.bright_cyan,
+                palette.bright_white,
+                palette.cursor,
+                palette.selection_background,
+            ];
+            assert_eq!(slots.len(), REQUIRED_TERMINAL_TOKENS.len());
         }
     }
     #[test]
