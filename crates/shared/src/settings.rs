@@ -36,7 +36,11 @@
 //! the Rust field names (snake_case) so users edit the file in the
 //! shape they read in source.
 
-use std::sync::{mpsc, Arc, Mutex, RwLock};
+use std::{
+    sync::{mpsc, Arc, Mutex, RwLock},
+    thread,
+    time::Duration,
+};
 
 use serde::{Deserialize, Serialize};
 use static_assertions::assert_impl_all;
@@ -328,6 +332,61 @@ impl SystemAppearanceSource for PollingSystemAppearanceSource {
     }
 }
 
+/// OS-backed appearance source using the platform detector with a 30s
+/// polling fallback. Initial unknown/unsupported detection falls back to dark.
+#[derive(Debug)]
+pub struct NativeSystemAppearanceSource {
+    inner: Arc<PollingSystemAppearanceSource>,
+}
+
+impl NativeSystemAppearanceSource {
+    pub const POLL_INTERVAL: Duration = Duration::from_secs(30);
+
+    #[must_use]
+    pub fn new() -> Self {
+        Self::with_poll_interval(Self::POLL_INTERVAL)
+    }
+
+    #[must_use]
+    pub fn with_poll_interval(interval: Duration) -> Self {
+        let inner = Arc::new(PollingSystemAppearanceSource::new(
+            detect_system_appearance(),
+        ));
+        let worker = Arc::clone(&inner);
+        thread::spawn(move || loop {
+            thread::sleep(interval);
+            worker.poll_update(detect_system_appearance());
+        });
+        Self { inner }
+    }
+}
+
+impl Default for NativeSystemAppearanceSource {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SystemAppearanceSource for NativeSystemAppearanceSource {
+    fn current_appearance(&self) -> SystemAppearance {
+        self.inner.current_appearance()
+    }
+
+    fn subscribe(&self) -> mpsc::Receiver<SystemAppearance> {
+        self.inner.subscribe()
+    }
+}
+
+#[must_use]
+pub fn detect_system_appearance() -> SystemAppearance {
+    match dark_light::detect() {
+        Ok(dark_light::Mode::Light) => SystemAppearance::Light,
+        Ok(dark_light::Mode::Dark | dark_light::Mode::Unspecified) | Err(_) => {
+            SystemAppearance::Dark
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct ActiveThemeResolver<S> {
     settings: Settings,
@@ -387,7 +446,9 @@ pub fn resolve_theme_id(settings: &Settings, system_appearance: SystemAppearance
 assert_impl_all!(SystemAppearance: Send, Sync);
 assert_impl_all!(ActiveThemeChange: Send, Sync);
 assert_impl_all!(PollingSystemAppearanceSource: Send, Sync);
+assert_impl_all!(NativeSystemAppearanceSource: Send, Sync);
 assert_impl_all!(ActiveThemeResolver<PollingSystemAppearanceSource>: Send, Sync);
+assert_impl_all!(ActiveThemeResolver<NativeSystemAppearanceSource>: Send, Sync);
 
 #[cfg(test)]
 mod tests {
