@@ -9,9 +9,11 @@ description = "Notification and error-log spine for OpenSpace."
 
 [dependencies]
 chrono = { workspace = true }
+anyhow = { workspace = true }
 regex = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
-tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt", "json"] }
 
 [dev-dependencies]
 proptest = { workspace = true }
