@@ -2573,6 +2573,8 @@ name = "openspace-app"
 version = "0.1.0"
 dependencies = [
  "iced",
+ "openspace-observability",
+ "openspace-persistence",
 ]
 
 [[package]]

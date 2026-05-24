@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     env, fs,
     io::{self, Write},
     path::{Path, PathBuf},
@@ -12,6 +13,7 @@ use tracing_subscriber::{
 };
 
 pub const LOG_RETENTION_DAYS: i64 = 14;
+pub const RECENT_LOG_LINE_CAPACITY: usize = 200;
 const LOG_PREFIX: &str = "openspace-";
 const LOG_SUFFIX: &str = ".log";
 
@@ -25,6 +27,7 @@ pub fn init_file_logging(data_dir: impl AsRef<Path>) -> io::Result<FileLoggingGu
     prune_old_logs(&log_dir, Utc::now())?;
 
     let writer = SharedRedactingDailyWriter::new(RedactingDailyWriter::new(log_dir));
+    crate::crash_dump::CrashDumpWriter::new(data_dir, writer.clone()).install();
     let filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_filter()));
 
@@ -89,6 +92,19 @@ impl SharedRedactingDailyWriter {
     pub fn new(writer: RedactingDailyWriter) -> Self {
         Self(Arc::new(Mutex::new(writer)))
     }
+
+    #[must_use]
+    pub fn recent_lines(&self) -> Vec<String> {
+        self.0
+            .lock()
+            .expect("log writer mutex poisoned")
+            .recent_lines()
+    }
+
+    #[cfg(test)]
+    pub fn make_test_writer(&self) -> SharedRedactingDailyWriteGuard {
+        SharedRedactingDailyWriteGuard(self.0.clone())
+    }
 }
 
 impl<'a> MakeWriter<'a> for SharedRedactingDailyWriter {
@@ -117,6 +133,7 @@ pub struct RedactingDailyWriter {
     today: Option<NaiveDate>,
     file: Option<fs::File>,
     clock: fn() -> NaiveDate,
+    recent_lines: VecDeque<String>,
 }
 
 impl RedactingDailyWriter {
@@ -127,6 +144,7 @@ impl RedactingDailyWriter {
             today: None,
             file: None,
             clock: || Utc::now().date_naive(),
+            recent_lines: VecDeque::with_capacity(RECENT_LOG_LINE_CAPACITY),
         }
     }
 
@@ -134,6 +152,20 @@ impl RedactingDailyWriter {
     fn set_clock_for_test(&mut self, clock: fn() -> NaiveDate) {
         self.clock = clock;
         self.file = None;
+    }
+
+    #[must_use]
+    pub fn recent_lines(&self) -> Vec<String> {
+        self.recent_lines.iter().cloned().collect()
+    }
+
+    fn remember_lines(&mut self, input: &str) {
+        for line in input.lines() {
+            if self.recent_lines.len() == RECENT_LOG_LINE_CAPACITY {
+                self.recent_lines.pop_front();
+            }
+            self.recent_lines.push_back(line.to_owned());
+        }
     }
 
     fn ensure_file(&mut self) -> io::Result<&mut fs::File> {
@@ -160,6 +192,7 @@ impl Write for RedactingDailyWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let input = String::from_utf8_lossy(buf);
         let redacted = redact(&input);
+        self.remember_lines(&redacted);
         self.ensure_file()?.write_all(redacted.as_bytes())?;
         Ok(buf.len())
     }
