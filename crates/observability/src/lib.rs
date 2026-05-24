@@ -8,6 +8,7 @@ use std::{
 use chrono::{DateTime, Utc};
 use tokio::sync::broadcast;
 
+pub mod crash_dump;
 pub mod file_logging;
 pub mod notify;
 pub mod tracing_support;
