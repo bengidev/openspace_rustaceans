@@ -2584,6 +2584,10 @@ version = "0.1.0"
 [[package]]
 name = "openspace-feature-home"
 version = "0.1.0"
+dependencies = [
+ "openspace-observability",
+ "tokio",
+]
 
 [[package]]
 name = "openspace-feature-terminal"

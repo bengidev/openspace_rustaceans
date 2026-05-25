@@ -7,5 +7,11 @@ repository.workspace = true
 rust-version.workspace = true
 description = "Home shell that hosts the three first-class modes (terminal, chat, editor)."
 
+[dependencies]
+openspace-observability = { path = "../observability" }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
 [lints]
 workspace = true
