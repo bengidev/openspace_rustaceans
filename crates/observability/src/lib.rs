@@ -180,7 +180,8 @@ impl Observability {
     }
 }
 
-pub use tokio::sync::broadcast::Receiver as NotificationStream;
+pub use tokio::sync::broadcast::error::RecvError as NotificationStreamRecvError;
+pub type NotificationStream = tokio::sync::broadcast::Receiver<Notification>;
 
 #[cfg(test)]
 mod tests {
