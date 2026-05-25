@@ -108,7 +108,7 @@ wiremock = "0.6"
 # pipeline in `openspace-persistence` on the same major version so a
 # fixture round-trip in tests stays representative of what the store
 # emits at runtime.
-toml = "0.8"
+toml = "1.1"
 # `tempfile` is dev-only — it backs the persistence crate's
 # `SettingsStore` tests so each scenario writes into an isolated
 # directory that is cleaned up regardless of test outcome. Pinned at
