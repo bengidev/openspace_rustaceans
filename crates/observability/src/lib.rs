@@ -2,11 +2,15 @@
 
 use std::{
     collections::VecDeque,
+    fs, io,
+    path::Path,
     sync::{Arc, Mutex},
 };
 
 use chrono::{DateTime, Utc};
 use tokio::sync::broadcast;
+
+use crate::file_logging::redact;
 
 pub mod crash_dump;
 pub mod file_logging;
@@ -49,6 +53,7 @@ pub struct Notification {
     pub severity: Severity,
     pub source: String,
     pub message: String,
+    pub detail: Option<String>,
     pub timestamp: DateTime<Utc>,
     pub surface: UiSurface,
 }
@@ -56,10 +61,21 @@ pub struct Notification {
 impl Notification {
     #[must_use]
     pub fn new(severity: Severity, source: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::with_detail(severity, source, message, None::<String>)
+    }
+
+    #[must_use]
+    pub fn with_detail(
+        severity: Severity,
+        source: impl Into<String>,
+        message: impl Into<String>,
+        detail: Option<impl Into<String>>,
+    ) -> Self {
         Self {
             severity,
             source: source.into(),
             message: message.into(),
+            detail: detail.map(Into::into),
             timestamp: Utc::now(),
             surface: severity.ui_surface(),
         }
@@ -76,6 +92,12 @@ impl Default for ErrorLog {
     fn default() -> Self {
         Self::with_capacity(DEFAULT_ERROR_LOG_CAPACITY)
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ErrorLogExportFilter<'a> {
+    pub severity: Option<Severity>,
+    pub source: Option<&'a str>,
 }
 
 impl ErrorLog {
@@ -119,12 +141,57 @@ impl ErrorLog {
 
     #[must_use]
     pub fn filter(&self, severity: Option<Severity>, source: Option<&str>) -> Vec<Notification> {
-        self.entries
-            .iter()
-            .filter(|event| severity.is_none_or(|expected| event.severity == expected))
-            .filter(|event| source.is_none_or(|expected| event.source == expected))
+        self.filtered_entries(ErrorLogExportFilter { severity, source })
             .cloned()
             .collect()
+    }
+
+    pub fn export(&self, path: impl AsRef<Path>) -> io::Result<()> {
+        self.export_filtered(path, ErrorLogExportFilter::default())
+    }
+
+    pub fn export_filtered(
+        &self,
+        path: impl AsRef<Path>,
+        filter: ErrorLogExportFilter<'_>,
+    ) -> io::Result<()> {
+        fs::write(path, self.export_snapshot(filter))
+    }
+
+    #[must_use]
+    pub fn export_snapshot(&self, filter: ErrorLogExportFilter<'_>) -> String {
+        let mut snapshot = String::new();
+        for event in self.filtered_entries(filter) {
+            snapshot.push_str(&redact(&format!(
+                "timestamp={} severity={:?} source={} message={}\n",
+                event.timestamp.to_rfc3339(),
+                event.severity,
+                event.source,
+                event.message
+            )));
+            if let Some(detail) = &event.detail {
+                snapshot.push_str(&redact(&format!("detail={}\n", detail)));
+            }
+        }
+        snapshot
+    }
+
+    fn filtered_entries<'a>(
+        &'a self,
+        filter: ErrorLogExportFilter<'a>,
+    ) -> impl Iterator<Item = &'a Notification> {
+        self.entries
+            .iter()
+            .filter(move |event| {
+                filter
+                    .severity
+                    .is_none_or(|expected| event.severity == expected)
+            })
+            .filter(move |event| {
+                filter
+                    .source
+                    .is_none_or(|expected| event.source == expected)
+            })
     }
 }
 
