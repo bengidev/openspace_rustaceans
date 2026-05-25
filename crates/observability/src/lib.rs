@@ -15,6 +15,7 @@ use crate::file_logging::redact;
 pub mod crash_dump;
 pub mod file_logging;
 pub mod notify;
+pub mod retry;
 pub mod tracing_support;
 
 pub const DEFAULT_ERROR_LOG_CAPACITY: usize = 1_000;
