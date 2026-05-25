@@ -145,7 +145,7 @@ notify = "6"
 # for the persistence layer's settings, database, theme, log, and cache
 # paths. Pinned at the workspace level so all filesystem entry points
 # share the same OS mapping semantics.
-directories = "5"
+directories = "6"
 # `dark-light` detects the host OS light/dark preference for
 # follow-system theme mode. The shared settings domain wraps it behind a
 # mockable source plus a polling fallback so UI code can subscribe to
