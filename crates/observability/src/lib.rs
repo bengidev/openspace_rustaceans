@@ -28,12 +28,21 @@ pub enum Severity {
     Critical,
 }
 
+/// Intended UI surface for a severity level, matching the PRD-05 routing
+/// table: Low is silently logged, Medium gets a dismissible toast, High
+/// gets a persistent banner, and Critical blocks the UI with a modal
+/// dialog offering retry / skip / report actions.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum UiSurface {
+    /// Silent — appears only in the error-log panel.
     Passive,
+    /// Dismissible toast notification (shown ~5 s, \"show details\" link).
     Toast,
+    /// Persistent banner until the user dismisses it.
+    Banner,
+    /// Modal dialog that blocks input until the user chooses a recovery
+    /// action (retry, skip, report).
     Modal,
-    Blocking,
 }
 
 impl Severity {
@@ -42,8 +51,8 @@ impl Severity {
         match self {
             Self::Low => UiSurface::Passive,
             Self::Medium => UiSurface::Toast,
-            Self::High => UiSurface::Modal,
-            Self::Critical => UiSurface::Blocking,
+            Self::High => UiSurface::Banner,
+            Self::Critical => UiSurface::Modal,
         }
     }
 }
@@ -335,8 +344,8 @@ mod tests {
     fn severity_routes_to_expected_surfaces() {
         assert_eq!(Severity::Low.ui_surface(), UiSurface::Passive);
         assert_eq!(Severity::Medium.ui_surface(), UiSurface::Toast);
-        assert_eq!(Severity::High.ui_surface(), UiSurface::Modal);
-        assert_eq!(Severity::Critical.ui_surface(), UiSurface::Blocking);
+        assert_eq!(Severity::High.ui_surface(), UiSurface::Banner);
+        assert_eq!(Severity::Critical.ui_surface(), UiSurface::Modal);
     }
 
     #[tokio::test]
