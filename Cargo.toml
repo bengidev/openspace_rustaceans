@@ -139,7 +139,7 @@ tokio-rusqlite = { version = "0.6", features = ["bundled"] }
 # surface so the persistence layer stays portable. Pinned at the
 # workspace level so later slices that watch other on-disk artefacts
 # (workspace directories, attachment cache) reuse the same major.
-notify = "6"
+notify = "8"
 # `directories` resolves platform-conventional application data roots
 # (Application Support on macOS, XDG data on Linux, AppData on Windows)
 # for the persistence layer's settings, database, theme, log, and cache
