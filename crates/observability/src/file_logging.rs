@@ -39,8 +39,7 @@ pub fn init_file_logging(data_dir: impl AsRef<Path>) -> io::Result<FileLoggingGu
     // Use tracing-appender for daily file rotation. The RollingFileAppender
     // handles date-check, close-reopen, and filename templating — matching
     // the PRD-05 spec for "tracing-appender::rolling::daily".
-    let appender =
-        tracing_appender::rolling::daily(&log_dir, LOG_PREFIX);
+    let appender = tracing_appender::rolling::daily(&log_dir, LOG_PREFIX);
     let writer = SharedRedactingWriter::new(appender);
     crate::crash_dump::CrashDumpWriter::new(data_dir, writer.clone()).install();
     let filter =
@@ -321,11 +320,7 @@ mod tests {
         let entries: Vec<_> = fs::read_dir(temp.path())
             .expect("read dir")
             .filter_map(Result::ok)
-            .filter(|e| {
-                e.file_name()
-                    .to_string_lossy()
-                    .starts_with(LOG_PREFIX)
-            })
+            .filter(|e| e.file_name().to_string_lossy().starts_with(LOG_PREFIX))
             .collect();
         assert_eq!(entries.len(), 1);
         let content = fs::read_to_string(entries[0].path()).expect("read");
