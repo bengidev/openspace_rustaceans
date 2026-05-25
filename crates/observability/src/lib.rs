@@ -290,6 +290,48 @@ mod tests {
     }
 
     #[test]
+    fn exports_filtered_redacted_snapshot() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("error-log.txt");
+        let mut log = ErrorLog::with_capacity(10);
+        log.record(Notification::with_detail(
+            Severity::Low,
+            "ui",
+            "ignored user@example.com",
+            Some("ignored"),
+        ));
+        log.record(Notification::with_detail(
+            Severity::High,
+            "network",
+            "api_key=abcdefghijklmnopqrstuvwxyz",
+            Some("Bearer abc.def.ghi email admin@example.com file_content: Lorem ipsum dolor sit amet, consectetur adipiscing elit. Vestibulum vulputate justo sed tortor aliquam, at egestas massa accumsan. Integer luctus, nisi sit amet mattis imperdiet, tortor justo ultricies sem, vitae blandit ante neque sed augue. Donec nec."),
+        ));
+
+        log.export_filtered(
+            &path,
+            ErrorLogExportFilter {
+                severity: Some(Severity::High),
+                source: Some("network"),
+            },
+        )
+        .expect("export writes snapshot");
+
+        let output = std::fs::read_to_string(path).expect("snapshot readable");
+        assert!(output.contains("timestamp="));
+        assert!(output.contains("severity=High"));
+        assert!(output.contains("source=network"));
+        assert!(output.contains("message=[REDACTED_API_KEY]"));
+        assert!(output.contains(
+            "detail=Bearer [REDACTED] email [REDACTED_EMAIL] file_content=[REDACTED_SNIPPET]"
+        ));
+        assert!(!output.contains("ui"));
+        assert!(!output.contains("abcdefghijklmnopqrstuvwxyz"));
+        assert!(!output.contains("abc.def.ghi"));
+        assert!(!output.contains("admin@example.com"));
+        assert!(!output.contains("Vestibulum vulputate justo"));
+    }
+
+    #[test]
     fn severity_routes_to_expected_surfaces() {
         assert_eq!(Severity::Low.ui_surface(), UiSurface::Passive);
         assert_eq!(Severity::Medium.ui_surface(), UiSurface::Toast);
