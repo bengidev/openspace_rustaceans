@@ -113,6 +113,21 @@ jobs:
       - name: scripts/ci/no-raw-sql.sh
         run: scripts/ci/no-raw-sql.sh
 
+  redaction-boundary:
+    name: no unredacted secrets in logs
+    runs-on: ubuntu-latest
+    # Grep gate (no compilation needed) that ensures tracing and logging
+    # calls outside crates/observability never emit raw API keys, bearer
+    # tokens, or email addresses without going through the redact()
+    # pipeline.  Complements the redaction unit tests which prove the
+    # redactor itself works.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: scripts/ci/no-secrets-in-logs.sh
+        run: scripts/ci/no-secrets-in-logs.sh
+
   doc:
     name: doc (-D warnings)
     runs-on: ubuntu-latest

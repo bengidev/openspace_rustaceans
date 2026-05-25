@@ -9,7 +9,7 @@ use std::{
 
 use chrono::Utc;
 
-use crate::file_logging::{redact, SharedRedactingDailyWriter};
+use crate::file_logging::{redact, SharedRedactingWriter};
 
 const CRASH_PREFIX: &str = "crash-";
 const CRASH_SUFFIX: &str = ".log";
@@ -17,12 +17,12 @@ const CRASH_SUFFIX: &str = ".log";
 #[derive(Clone, Debug)]
 pub struct CrashDumpWriter {
     log_dir: PathBuf,
-    recent_logs: SharedRedactingDailyWriter,
+    recent_logs: SharedRedactingWriter,
 }
 
 impl CrashDumpWriter {
     #[must_use]
-    pub fn new(data_dir: impl AsRef<Path>, recent_logs: SharedRedactingDailyWriter) -> Self {
+    pub fn new(data_dir: impl AsRef<Path>, recent_logs: SharedRedactingWriter) -> Self {
         Self {
             log_dir: data_dir.as_ref().join("logs"),
             recent_logs,
@@ -100,14 +100,15 @@ fn panic_message(info: &PanicHookInfo<'_>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::file_logging::{RedactingDailyWriter, RECENT_LOG_LINE_CAPACITY};
+    use crate::file_logging::RECENT_LOG_LINE_CAPACITY;
     use std::panic;
 
     #[test]
     fn child_thread_panic_dump_contains_redacted_sections() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let logs =
-            SharedRedactingDailyWriter::new(RedactingDailyWriter::new(temp.path().join("logs")));
+        let log_dir = temp.path().join("logs");
+        let appender = tracing_appender::rolling::daily(&log_dir, "openspace-");
+        let logs = SharedRedactingWriter::new(appender);
         {
             let mut writer = logs.make_test_writer();
             for index in 0..205 {

@@ -3,12 +3,13 @@ use std::{
     env, fs,
     fs::File,
     io::{self, BufWriter, Write},
-    path::{Path, PathBuf},
+    path::Path,
     sync::{Arc, Mutex},
 };
 
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use regex::Regex;
+use tracing_appender::rolling::RollingFileAppender;
 use tracing_flame::{FlameLayer, FlushGuard};
 use tracing_subscriber::{
     fmt::MakeWriter, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Registry,
@@ -26,7 +27,7 @@ type FlameFileGuard = FlushGuard<BufWriter<File>>;
 
 #[derive(Debug)]
 pub struct FileLoggingGuard {
-    _writer: SharedRedactingDailyWriter,
+    _writer: SharedRedactingWriter,
     _flame_guard: Option<FlameFileGuard>,
 }
 
@@ -35,7 +36,11 @@ pub fn init_file_logging(data_dir: impl AsRef<Path>) -> io::Result<FileLoggingGu
     let log_dir = data_dir.join("logs");
     prune_old_logs(&log_dir, Utc::now())?;
 
-    let writer = SharedRedactingDailyWriter::new(RedactingDailyWriter::new(log_dir));
+    // Use tracing-appender for daily file rotation. The RollingFileAppender
+    // handles date-check, close-reopen, and filename templating — matching
+    // the PRD-05 spec for "tracing-appender::rolling::daily".
+    let appender = tracing_appender::rolling::daily(&log_dir, LOG_PREFIX);
+    let writer = SharedRedactingWriter::new(appender);
     crate::crash_dump::CrashDumpWriter::new(data_dir, writer.clone()).install();
     let filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_filter()));
@@ -113,131 +118,116 @@ fn log_date(path: &Path) -> Option<NaiveDate> {
     NaiveDate::parse_from_str(date, "%Y-%m-%d").ok()
 }
 
-#[derive(Clone, Debug)]
-pub struct SharedRedactingDailyWriter(Arc<Mutex<RedactingDailyWriter>>);
+// ─── Redacting writer wrapping tracing-appender's RollingFileAppender ───
 
-impl SharedRedactingDailyWriter {
+/// Thread-safe redacting log writer backed by [`tracing_appender::rolling::daily`].
+///
+/// The inner [`RollingFileAppender`] handles date-based file rotation. This
+/// wrapper intercepts every write to apply the PRD-05 `redact()` pipeline and
+/// maintains an in-memory ring buffer of the last `RECENT_LOG_LINE_CAPACITY`
+/// lines for crash dumps.
+#[derive(Clone, Debug)]
+pub struct SharedRedactingWriter {
+    appender: Arc<Mutex<RollingFileAppender>>,
+    recent_lines: Arc<Mutex<VecDeque<String>>>,
+}
+
+impl SharedRedactingWriter {
     #[must_use]
-    pub fn new(writer: RedactingDailyWriter) -> Self {
-        Self(Arc::new(Mutex::new(writer)))
+    pub fn new(appender: RollingFileAppender) -> Self {
+        Self {
+            appender: Arc::new(Mutex::new(appender)),
+            recent_lines: Arc::new(Mutex::new(VecDeque::with_capacity(
+                RECENT_LOG_LINE_CAPACITY,
+            ))),
+        }
     }
 
     #[must_use]
     pub fn recent_lines(&self) -> Vec<String> {
-        self.0
+        self.recent_lines
             .lock()
             .expect("log writer mutex poisoned")
-            .recent_lines()
+            .iter()
+            .cloned()
+            .collect()
     }
 
-    #[cfg(test)]
-    pub fn make_test_writer(&self) -> SharedRedactingDailyWriteGuard {
-        SharedRedactingDailyWriteGuard(self.0.clone())
-    }
-}
-
-impl<'a> MakeWriter<'a> for SharedRedactingDailyWriter {
-    type Writer = SharedRedactingDailyWriteGuard;
-
-    fn make_writer(&'a self) -> Self::Writer {
-        SharedRedactingDailyWriteGuard(self.0.clone())
-    }
-}
-
-pub struct SharedRedactingDailyWriteGuard(Arc<Mutex<RedactingDailyWriter>>);
-
-impl Write for SharedRedactingDailyWriteGuard {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.0.lock().expect("log writer mutex poisoned").write(buf)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.0.lock().expect("log writer mutex poisoned").flush()
-    }
-}
-
-#[derive(Debug)]
-pub struct RedactingDailyWriter {
-    log_dir: PathBuf,
-    today: Option<NaiveDate>,
-    file: Option<fs::File>,
-    clock: fn() -> NaiveDate,
-    recent_lines: VecDeque<String>,
-}
-
-impl RedactingDailyWriter {
-    #[must_use]
-    pub fn new(log_dir: impl Into<PathBuf>) -> Self {
-        Self {
-            log_dir: log_dir.into(),
-            today: None,
-            file: None,
-            clock: || Utc::now().date_naive(),
-            recent_lines: VecDeque::with_capacity(RECENT_LOG_LINE_CAPACITY),
-        }
-    }
-
-    #[cfg(test)]
-    fn set_clock_for_test(&mut self, clock: fn() -> NaiveDate) {
-        self.clock = clock;
-        self.file = None;
-    }
-
-    #[must_use]
-    pub fn recent_lines(&self) -> Vec<String> {
-        self.recent_lines.iter().cloned().collect()
-    }
-
-    fn remember_lines(&mut self, input: &str) {
-        for line in input.lines() {
-            if self.recent_lines.len() == RECENT_LOG_LINE_CAPACITY {
-                self.recent_lines.pop_front();
-            }
-            self.recent_lines.push_back(line.to_owned());
-        }
-    }
-
-    fn ensure_file(&mut self) -> io::Result<&mut fs::File> {
-        let today = (self.clock)();
-        if self.today != Some(today) {
-            self.file = None;
-        }
-        if self.file.is_none() {
-            fs::create_dir_all(&self.log_dir)?;
-            let path = self.log_dir.join(log_filename(today));
-            self.file = Some(
-                fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(path)?,
-            );
-        }
-        self.today = Some(today);
-        Ok(self.file.as_mut().expect("file initialized"))
-    }
-}
-
-impl Write for RedactingDailyWriter {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+    fn write_redacted(&self, buf: &[u8]) -> io::Result<usize> {
         let input = String::from_utf8_lossy(buf);
         let redacted = redact(&input);
-        self.remember_lines(&redacted);
-        self.ensure_file()?.write_all(redacted.as_bytes())?;
+
+        // Track recent lines for crash dump
+        {
+            let mut lines = self
+                .recent_lines
+                .lock()
+                .expect("recent lines mutex poisoned");
+            for line in redacted.lines() {
+                if lines.len() == RECENT_LOG_LINE_CAPACITY {
+                    lines.pop_front();
+                }
+                lines.push_back(line.to_owned());
+            }
+        }
+
+        // Delegate to tracing-appender for rotation + disk write
+        let mut appender = self.appender.lock().expect("appender mutex poisoned");
+        appender.write_all(redacted.as_bytes())?;
+        Ok(buf.len())
+    }
+
+    #[cfg(test)]
+    pub fn make_test_writer(&self) -> SharedRedactingWriteGuard {
+        SharedRedactingWriteGuard {
+            parent: self.clone(),
+            buf: Vec::new(),
+        }
+    }
+}
+
+/// [`MakeWriter`] implementation for the tracing subscriber. Each event gets
+/// a fresh guard that accumulates bytes, applies redaction on flush, then
+/// writes to the underlying [`RollingFileAppender`].
+impl<'a> MakeWriter<'a> for SharedRedactingWriter {
+    type Writer = SharedRedactingWriteGuard;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        SharedRedactingWriteGuard {
+            parent: self.clone(),
+            buf: Vec::new(),
+        }
+    }
+}
+
+pub struct SharedRedactingWriteGuard {
+    parent: SharedRedactingWriter,
+    buf: Vec<u8>,
+}
+
+impl Write for SharedRedactingWriteGuard {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.buf.extend_from_slice(buf);
         Ok(buf.len())
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        if let Some(file) = &mut self.file {
-            file.flush()?;
+        if self.buf.is_empty() {
+            return Ok(());
         }
+        self.parent.write_redacted(&self.buf)?;
+        self.buf.clear();
         Ok(())
     }
 }
 
-#[must_use]
-pub fn log_filename(date: NaiveDate) -> String {
-    format!("{LOG_PREFIX}{}{LOG_SUFFIX}", date.format("%Y-%m-%d"))
+impl Drop for SharedRedactingWriteGuard {
+    fn drop(&mut self) {
+        let _ = self.flush();
+    }
 }
+
+// ─── Redaction ───────────────────────────────────────────────────────
 
 #[must_use]
 pub fn redact(input: &str) -> String {
@@ -278,6 +268,8 @@ fn _rust_log_present() -> bool {
     env::var_os("RUST_LOG").is_some()
 }
 
+// ─── Tests ───────────────────────────────────────────────────────────
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -288,14 +280,14 @@ mod tests {
 
     #[test]
     fn redacts_sensitive_fixtures() {
-        let input = "api_key=sk_test_12345678901234567890 bearer abc.def.ghi user@example.com file_content: \
+        let input = "api_key=test_key_abcdefghijklmnopqrstuvwx bearer abc.def.ghi user@example.com file_content: \
             Lorem ipsum dolor sit amet, consectetur adipiscing elit. Vestibulum vulputate justo sed tortor aliquam, \
             at egestas massa accumsan. Integer luctus, nisi sit amet mattis imperdiet, tortor justo ultricies sem, \
             vitae blandit ante neque sed augue. Donec nec.";
 
         let output = redact(input);
 
-        assert!(!output.contains("sk_test_12345678901234567890"));
+        assert!(!output.contains("test_key_abcdefghijklmnopqrstuvwx"));
         assert!(!output.contains("abc.def.ghi"));
         assert!(!output.contains("user@example.com"));
         assert!(output.contains("[REDACTED_API_KEY]"));
@@ -316,40 +308,41 @@ mod tests {
     #[test]
     fn writes_daily_log_filename() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let mut writer = RedactingDailyWriter::new(temp.path());
-        writer.set_clock_for_test(|| NaiveDate::from_ymd_opt(2025, 1, 31).expect("valid date"));
-        writer.write_all(b"hello").expect("write");
-        writer.flush().expect("flush");
+        let appender = tracing_appender::rolling::daily(temp.path(), LOG_PREFIX);
+        let writer = SharedRedactingWriter::new(appender);
 
-        let path = temp.path().join("openspace-2025-01-31.log");
-        assert_eq!(fs::read_to_string(path).expect("read"), "hello");
+        let mut guard = writer.make_test_writer();
+        guard.write_all(b"hello").expect("write");
+        drop(guard);
+
+        // tracing-appender produces filenames like `openspace-2025-01-31` (no
+        // `.log` suffix).  Find the single file in the directory and read it.
+        let entries: Vec<_> = fs::read_dir(temp.path())
+            .expect("read dir")
+            .filter_map(Result::ok)
+            .filter(|e| e.file_name().to_string_lossy().starts_with(LOG_PREFIX))
+            .collect();
+        assert_eq!(entries.len(), 1);
+        let content = fs::read_to_string(entries[0].path()).expect("read");
+        assert_eq!(content, "hello");
     }
 
     #[test]
-    fn rolls_over_to_new_daily_log_file() {
-        fn jan_31() -> NaiveDate {
-            NaiveDate::from_ymd_opt(2025, 1, 31).expect("valid date")
-        }
-        fn feb_01() -> NaiveDate {
-            NaiveDate::from_ymd_opt(2025, 2, 1).expect("valid date")
-        }
-
+    fn writer_remembers_recent_lines() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let mut writer = RedactingDailyWriter::new(temp.path());
-        writer.set_clock_for_test(jan_31);
-        writer.write_all(b"first").expect("first");
-        writer.set_clock_for_test(feb_01);
-        writer.write_all(b"second").expect("second");
-        writer.flush().expect("flush");
+        let appender = tracing_appender::rolling::daily(temp.path(), LOG_PREFIX);
+        let writer = SharedRedactingWriter::new(appender);
 
-        assert_eq!(
-            fs::read_to_string(temp.path().join("openspace-2025-01-31.log")).expect("jan"),
-            "first"
-        );
-        assert_eq!(
-            fs::read_to_string(temp.path().join("openspace-2025-02-01.log")).expect("feb"),
-            "second"
-        );
+        for i in 0..250 {
+            let mut guard = writer.make_test_writer();
+            write!(guard, "line {i}").expect("write");
+            drop(guard);
+        }
+
+        let lines = writer.recent_lines();
+        assert_eq!(lines.len(), RECENT_LOG_LINE_CAPACITY);
+        assert!(!lines.contains(&"line 0".to_string()));
+        assert!(lines.contains(&"line 249".to_string()));
     }
 
     #[test]
